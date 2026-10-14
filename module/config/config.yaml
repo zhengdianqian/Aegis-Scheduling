@@ -27,19 +27,29 @@ CpuIdle:
 #   中核 policy3: 499200 ~ 2803200 (19 档)
 #   超大核 policy7: 595200 ~ 3360000 (20 档)
 # perf 归一化: 0.0 = 各集群硬件最低频, 1.0 = 各集群最高频
-# 采样 tick = 100ms；静态沉底 ≈ 0.3~0.7s；触摸爆发当拍到位（≤100ms）
-# low_load_gain: 低负载目标压缩——【非交互态】负载低于升频阈值时目标按增益
-#   缩放，小说/短视频等 util 0.2~0.35 的持续静态场景落位低频档省电。
-#   1.0 = 跟随原始负载；0.45 ≈ 静态落 748~844MHz。
-# interact_hold_ticks: 交互驻留（1tick=100ms）。检测到负载突增（触摸/滑动）
-#   后进入交互态：跳过低载压缩与尖峰衰减、升频免确认且突增当拍一步到位、
-#   给满 headroom 帧级余量、窗口内禁止快速沉底；手势停止后经此时长才回到
-#   省电路径。治"静态→滑动起步丢帧"和"断续慢拖反复顿挫"。0=关闭。
-#   省电/均衡 8（0.8s），性能 10（1s），极速 15。
-# interact_fg_util: 交互态前台闸门——最忙前台 App 线程（UI/RenderThread）
-#   利用率超过此值、且簇负载超过 down_fast_threshold 时即进入交互态（不要求
-#   负载跳变，低速慢拖是平缓爬升），挡住 MIUI 后台同步等系统噪声误触。
-#   0=不校验。滑动时前台线程普遍 0.25+，静态/看视频时仅 0.03~0.15。
+# 采样 tick = 100ms。
+#
+# v7 规则（无状态、无模式切换）：频率只跟随真实负载。
+#   target_perf = raw_util × gain
+#   gain 是一条随负载单调上升的连续直线：
+#     raw ≤ down_threshold → gain = low_load_gain   （静态/轻载深度压频）
+#     raw ≥ up_threshold   → gain = headroom_factor （重载留帧余量）
+#     两阈值之间线性插值，全程无阶跃。
+#   升频需连续 up_rate_limit_ticks 拍确认（滤后台毛刺）；唯一例外：
+#   前台 App 线程超 interact_fg_util 且单拍负载跳升 ≥ spike_jump_threshold
+#   时（真实触摸/滑动起步），当拍一步到目标——目标本身已被增益压过，
+#   轻 App 只会快速到正确的低档，不会过给。
+#   降频：raw < down_fast_threshold 立即快速沉底；滞回带内按 slow_down_scale
+#   放缓下降防锯齿。升降对称，无驻留状态。
+#
+# 三档性格（理论分工，参数沿同一组规则微调）：
+#   省电 powersave：压得最深、上限 0.75（中核≤2188）、跳变门槛最高(0.40)，
+#     只有真实手势起步才直通；回退快（down_wait=2 / slow_down=0.50）。
+#     真机验证：酷安滑动中位 1920（钉频实测流畅线）零丢帧；MT 慢滑贴 499。
+#   标准 balance：压频略浅(0.55)、不封上限，跳变门槛 0.35 比省电档跟手，
+#     回退速度与省电档一致，避免重负载信息流粘在高档。
+#   性能 performance：低门槛(0.55)、快升(0.85)、缓降(down_wait=4)、保留 0.10
+#     底频与高端 1.30 余量，档位性格即"倾向驻留高位"。
 
 # 省电模式：深度下探 + 保守升频（静态省电，触摸不丢帧）
 powersave:
@@ -48,25 +58,22 @@ powersave:
     down_threshold: 0.45
     smoothing_up: 0.50
     smoothing_down: 0.45
-    down_rate_limit_ticks: 3
+    down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
     headroom_factor: 1.15
-    headroom_ramp: 0.15
     perf_floor: 0.0
     perf_ceil: 0.75
     perf_init: 0.25
     up_jump_threshold: 0.35
     slow_up_scale: 0.10
-    slow_down_scale: 0.40
+    slow_down_scale: 0.50
     down_fast_threshold: 0.30
     down_fast_mult: 4.5
-    spike_jump_threshold: 0.35
-    spike_decay: 0.30
+    spike_jump_threshold: 0.40
     low_load_gain: 0.45
-    interact_hold_ticks: 8
     interact_fg_util: 0.25
 
-# 均衡模式：静态贴底省电，触屏当拍回收防卡
+# 标准模式：静态贴底省电，触屏当拍回收防卡
 balance:
   cpu_load_governor:
     up_threshold: 0.70
@@ -74,24 +81,21 @@ balance:
     smoothing_up: 0.65
     smoothing_down: 0.35
     down_rate_limit_ticks: 2
-    up_rate_limit_ticks: 1
-    headroom_factor: 1.30
-    headroom_ramp: 0.15
+    up_rate_limit_ticks: 2
+    headroom_factor: 1.15
     perf_floor: 0.0
     perf_ceil: 1.0
     perf_init: 0.35
     up_jump_threshold: 0.35
     slow_up_scale: 0.15
-    slow_down_scale: 0.40
+    slow_down_scale: 0.50
     down_fast_threshold: 0.30
     down_fast_mult: 4.0
-    spike_jump_threshold: 0.30
-    spike_decay: 0.35
+    spike_jump_threshold: 0.35
     low_load_gain: 0.55
-    interact_hold_ticks: 8
     interact_fg_util: 0.25
 
-# 性能模式：底更深但倾向驻留高位
+# 性能模式：更浅压频、更缓回落
 performance:
   cpu_load_governor:
     up_threshold: 0.55
@@ -100,8 +104,7 @@ performance:
     smoothing_down: 0.20
     down_rate_limit_ticks: 4
     up_rate_limit_ticks: 1
-    headroom_factor: 1.45
-    headroom_ramp: 0.15
+    headroom_factor: 1.30
     perf_floor: 0.10
     perf_ceil: 1.0
     perf_init: 0.55
@@ -111,9 +114,7 @@ performance:
     down_fast_threshold: 0.15
     down_fast_mult: 3.0
     spike_jump_threshold: 0.35
-    spike_decay: 0.30
     low_load_gain: 0.75
-    interact_hold_ticks: 10
     interact_fg_util: 0.25
 
 # 极速模式：锁最高频，不参与下探
@@ -126,7 +127,6 @@ fast:
     down_rate_limit_ticks: 10
     up_rate_limit_ticks: 1
     headroom_factor: 2.0
-    headroom_ramp: 0.15
     perf_floor: 1.0
     perf_ceil: 1.0
     perf_init: 1.0
@@ -136,7 +136,5 @@ fast:
     down_fast_threshold: 0.10
     down_fast_mult: 2.5
     spike_jump_threshold: 0.35
-    spike_decay: 0.30
     low_load_gain: 1.0
-    interact_hold_ticks: 15
     interact_fg_util: 0.25

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, reactive } from 'vue';
+import { ref, onMounted, onUnmounted, reactive, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { exec } from '@/kernelsu';
 
@@ -77,6 +77,14 @@ const form = reactive({
 let keepPowerSwitch: string[] = [];
 const saving = ref(false);
 
+// 用户一旦改动表单即标记 dirty，阻止 3 秒轮询回填覆盖未保存的编辑
+// （现象：清空数字重新输入时，表单被磁盘旧值瞬间弹回）。
+// flush:'sync' + populating 护栏保证 fillForm 的程序化赋值不会误标脏。
+let populating = false;
+watch(form, () => {
+  if (!populating) dirty = true;
+}, { deep: true, flush: 'sync' });
+
 function fmtClock(sec: string): string {
   const d = new Date(Number(sec) * 1000);
   const p = (n: number) => String(n).padStart(2, '0');
@@ -131,19 +139,26 @@ function renderStatus(s: Kv) {
 }
 
 function fillForm(c: Kv) {
-  form.power_stop = parseInt(c.power_stop, 10) || 80;
-  form.power_start = parseInt(c.power_start, 10) || 78;
-  form.power_stop_time = parseInt(c.power_stop_time, 10) || 3;
-  form.charge_full = c.charge_full === '1' ? 1 : 0;
-  form.power_reset = c.power_reset === '1' ? 1 : 0;
-  form.temperature_switch = c.temperature_switch === '1' ? 1 : 0;
-  form.temperature_switch_stop = parseInt(c.temperature_switch_stop, 10) || 45;
-  form.temperature_switch_start = parseInt(c.temperature_switch_start, 10) || 40;
-  form.sched_switch = c.sched_switch === '1' ? 1 : 0;
-  form.sched_time = /^\d{1,2}:\d{2}$/.test(c.sched_time || '') ? (c.sched_time as string).padStart(5, '0') : '08:00';
-  form.sched_margin = parseInt(c.sched_margin, 10) || 15;
-  form.sched_floor = parseInt(c.sched_floor, 10) || 20;
-  form.sched_window = parseInt(c.sched_window, 10) || 12;
+  populating = true;
+  try {
+    form.power_stop = parseInt(c.power_stop, 10) || 80;
+    form.power_start = parseInt(c.power_start, 10) || 78;
+    form.power_stop_time = parseInt(c.power_stop_time, 10) || 3;
+    form.charge_full = c.charge_full === '1' ? 1 : 0;
+    form.power_reset = c.power_reset === '1' ? 1 : 0;
+    form.temperature_switch = c.temperature_switch === '1' ? 1 : 0;
+    form.temperature_switch_stop = parseInt(c.temperature_switch_stop, 10) || 45;
+    form.temperature_switch_start = parseInt(c.temperature_switch_start, 10) || 40;
+    form.sched_switch = c.sched_switch === '1' ? 1 : 0;
+    form.sched_time = /^\d{1,2}:\d{2}$/.test(c.sched_time || '') ? (c.sched_time as string).padStart(5, '0') : '08:00';
+    const margin = parseInt(c.sched_margin, 10);
+    const floor = parseInt(c.sched_floor, 10);
+    form.sched_margin = Number.isNaN(margin) ? 15 : margin;
+    form.sched_floor = Number.isNaN(floor) ? 20 : floor;
+    form.sched_window = parseInt(c.sched_window, 10) || 12;
+  } finally {
+    populating = false;
+  }
 }
 
 async function load() {

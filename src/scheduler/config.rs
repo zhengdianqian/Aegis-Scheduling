@@ -42,10 +42,9 @@ pub struct CpuLoadGovernorConfig {
     #[serde(default = "d_clg_smooth_down")] pub smoothing_down: f32,
     #[serde(default = "d_clg_down_rate")] pub down_rate_limit_ticks: u32,
     #[serde(default = "d_clg_up_rate")] pub up_rate_limit_ticks: u32,
+    /// 增益曲线高端（raw ≥ up_threshold 时的增益）：重载留帧余量。
+    /// 整条增益曲线在 low_load_gain（低端）与此值（高端）之间随负载线性变化。
     #[serde(default = "d_clg_headroom")] pub headroom_factor: f32,
-    /// headroom 在 up_threshold 附近的过渡带宽度：从 up_threshold - headroom_ramp
-    /// 到 up_threshold 线性由 1.0 渐变至 headroom_factor，避免阶跃导致振荡
-    #[serde(default = "d_clg_headroom_ramp")] pub headroom_ramp: f32,
     #[serde(default = "d_clg_floor")] pub perf_floor: f32,
     #[serde(default = "d_clg_ceil")] pub perf_ceil: f32,
     #[serde(default = "d_clg_init")] pub perf_init: f32,
@@ -60,26 +59,19 @@ pub struct CpuLoadGovernorConfig {
     #[serde(default = "d_clg_down_fast_thresh")] pub down_fast_threshold: f32,
     /// 快速降频时对 smoothing_down 的放大倍数
     #[serde(default = "d_clg_down_fast_mult")] pub down_fast_mult: f32,
-    /// 尖峰抑制：单 tick util 跳升超过此值时，其增量按 spike_decay 比例衰减，
-    /// 避免孤立瞬时尖峰（如单核 0↔100%）瞬间拉满 perf
+    /// 负载突增门槛：单 tick 内簇 max_util 跳升 ≥ 此值，且前台最忙线程超
+    /// interact_fg_util 时，升频跳过连续拍确认、当拍到达目标（目标仍按增益
+    /// 曲线由真实负载决定，不会过给）。前台不忙的后台毛刺不享受此通道。
     #[serde(default = "d_clg_spike_jump")] pub spike_jump_threshold: f32,
-    /// 尖峰增量保留比例（0.0=完全抑制，1.0=不抑制）
-    #[serde(default = "d_clg_spike_decay")] pub spike_decay: f32,
-    /// 低负载目标压缩：util < down_threshold 时目标按此增益缩放，
-    /// 使静态/轻载场景（如小说、短视频）稳定在较低频档（Aegis 8Gen2 适配）
+    /// 增益曲线低端（raw ≤ down_threshold 时的增益）：静态/轻载场景（小说、
+    /// 短视频、轻量列表）深度压频。增益从此值随负载线性升到 headroom_factor。
     #[serde(default = "d_clg_low_gain")] pub low_load_gain: f32,
-    /// 交互驻留时长（tick 数，1tick=100ms）：检测到负载突增（触摸/滑动）后
-    /// 进入交互态的保持拍数。交互态内：跳过低载压缩与尖峰衰减、升频免确认
-    /// 且当拍到位、按满载 headroom 留余量、禁止快速沉底。手势停止后经此时长
-    /// 才回到省电压缩路径，避免断续滑动反复支付起步延迟。0 = 关闭交互态。
-    #[serde(default = "d_clg_interact_hold")] pub interact_hold_ticks: u32,
-    /// 交互态前台闸门：仅当最忙前台 App 线程利用率（UI/RenderThread）超过此
-    /// 值时，负载突增才被认定为触摸交互。用于排除系统后台突发（后台同步/
-    /// 厂商服务）误触驻留导致静态频率被顶高。0 = 不校验前台。
+    /// 突增免确认的前台闸门：仅当最忙前台 App 线程利用率（UI/RenderThread）
+    /// 超过此值时，负载突增才被认定为真实交互并触发当拍升频。用于排除系统
+    /// 后台突发（同步/厂商服务）。0 = 不校验前台。
     #[serde(default = "d_clg_interact_fg")] pub interact_fg_util: f32,
 }
 
-fn d_clg_interact_hold() -> u32 { 8 }
 fn d_clg_interact_fg() -> f32 { 0.25 }
 
 fn d_clg_up_thresh() -> f32 { 0.80 }
@@ -89,7 +81,6 @@ fn d_clg_smooth_down() -> f32 { 0.30 }
 fn d_clg_down_rate() -> u32 { 3 }
 fn d_clg_up_rate() -> u32 { 2 }
 fn d_clg_headroom() -> f32 { 1.25 }
-fn d_clg_headroom_ramp() -> f32 { 0.15 }
 fn d_clg_floor() -> f32 { 0.15 }
 fn d_clg_ceil() -> f32 { 1.0 }
 fn d_clg_init() -> f32 { 0.50 }
@@ -99,7 +90,6 @@ fn d_clg_slow_down_scale() -> f32 { 0.5 }
 fn d_clg_down_fast_thresh() -> f32 { 0.10 }
 fn d_clg_down_fast_mult() -> f32 { 2.5 }
 fn d_clg_spike_jump() -> f32 { 0.35 }
-fn d_clg_spike_decay() -> f32 { 0.30 }
 fn d_clg_low_gain() -> f32 { 1.0 }
 
 impl Default for CpuLoadGovernorConfig {
@@ -113,7 +103,6 @@ impl Default for CpuLoadGovernorConfig {
             down_rate_limit_ticks: d_clg_down_rate(),
             up_rate_limit_ticks: d_clg_up_rate(),
             headroom_factor: d_clg_headroom(),
-            headroom_ramp: d_clg_headroom_ramp(),
             perf_floor: d_clg_floor(),
             perf_ceil: d_clg_ceil(),
             perf_init: d_clg_init(),
@@ -123,9 +112,7 @@ impl Default for CpuLoadGovernorConfig {
             down_fast_threshold: d_clg_down_fast_thresh(),
             down_fast_mult: d_clg_down_fast_mult(),
             spike_jump_threshold: d_clg_spike_jump(),
-            spike_decay: d_clg_spike_decay(),
             low_load_gain: d_clg_low_gain(),
-            interact_hold_ticks: d_clg_interact_hold(),
             interact_fg_util: d_clg_interact_fg(),
         }
     }
@@ -142,7 +129,6 @@ impl CpuLoadGovernorConfig {
         if !self.smoothing_up.is_finite() { self.smoothing_up = d_clg_smooth_up(); }
         if !self.smoothing_down.is_finite() { self.smoothing_down = d_clg_smooth_down(); }
         if !self.headroom_factor.is_finite() { self.headroom_factor = d_clg_headroom(); }
-        if !self.headroom_ramp.is_finite() { self.headroom_ramp = d_clg_headroom_ramp(); }
         if !self.perf_floor.is_finite() { self.perf_floor = d_clg_floor(); }
         if !self.perf_ceil.is_finite() { self.perf_ceil = d_clg_ceil(); }
         if !self.perf_init.is_finite() { self.perf_init = d_clg_init(); }
@@ -152,7 +138,6 @@ impl CpuLoadGovernorConfig {
         if !self.down_fast_threshold.is_finite() { self.down_fast_threshold = d_clg_down_fast_thresh(); }
         if !self.down_fast_mult.is_finite() { self.down_fast_mult = d_clg_down_fast_mult(); }
         if !self.spike_jump_threshold.is_finite() { self.spike_jump_threshold = d_clg_spike_jump(); }
-        if !self.spike_decay.is_finite() { self.spike_decay = d_clg_spike_decay(); }
         if !self.low_load_gain.is_finite() { self.low_load_gain = d_clg_low_gain(); }
 
         // 区间限制（语义约束）
@@ -169,14 +154,10 @@ impl CpuLoadGovernorConfig {
         self.up_jump_threshold = self.up_jump_threshold.clamp(0.0, 1.0);
         self.down_fast_threshold = self.down_fast_threshold.clamp(0.0, 1.0);
         self.spike_jump_threshold = self.spike_jump_threshold.clamp(0.0, 1.0);
-        self.spike_decay = self.spike_decay.clamp(0.0, 1.0);
-        // 低负载增益语义：(0.1..=1.0]，1.0 = 跟随原始负载（旧行为）
+        // 低负载增益语义：(0.1..=1.0]，1.0 = 跟随原始负载（不压频）
         self.low_load_gain = self.low_load_gain.clamp(0.1, 1.0);
-        // 交互驻留上限 50 拍 = 5s，防止异常值导致交互态长期不退出
-        self.interact_hold_ticks = self.interact_hold_ticks.min(50);
         if !self.interact_fg_util.is_finite() { self.interact_fg_util = d_clg_interact_fg(); }
         self.interact_fg_util = self.interact_fg_util.clamp(0.0, 1.0);
-        self.headroom_ramp = self.headroom_ramp.clamp(0.0, 1.0);
         // headroom 语义 >= 1（余量放大），down_fast_mult 语义 >= 1（放大）
         self.headroom_factor = self.headroom_factor.clamp(1.0, 3.0);
         self.down_fast_mult = self.down_fast_mult.clamp(1.0, 10.0);

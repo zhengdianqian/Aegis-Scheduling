@@ -5,7 +5,7 @@
 > 本仓库为个人使用的私密备份，目标：**静态看电视/看小说/低速滑信息流时低功耗，触摸滑动时不掉帧**，换设备或后续调参时一键找回全部上下文。
 
 - 验证主力机：**小米 MIX Fold 3（babylon）· 骁龙 8 Gen2 领先版 SM8550-AC · Android 16 · KernelSU**
-- 版本标识：`v2.0.2-aegis`（versionCode 20003），当前调度核心迭代到 **CLG v6（2026-10-15 真机验证）**
+- 版本标识：`v2.0.2-aegis`（versionCode 20003），当前调度核心迭代到 **CLG v7（2026-10-15 真机验证）**
 - 可直接刷入的整包：[`prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip`](prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip)
 
 ---
@@ -16,7 +16,7 @@
 2. [仓库结构](#2-仓库结构)
 3. [相对原版 yumi 2.0.2 的全部更新](#3-相对原版-yumi-202-的全部更新)
 4. [8Gen2 定制参数一览](#4-8gen2-定制参数一览)
-5. [真机实测数据（2026-10-15 CLG v6）](#5-真机实测数据2026-10-15-clg-v6)
+5. [真机实测数据（2026-10-15 CLG v7）](#5-真机实测数据2026-10-15-clg-v7)
 6. [编译方法](#6-编译方法)
 7. [刷入与热部署](#7-刷入与热部署)
 8. [调参手册](#8-调参手册)
@@ -27,18 +27,28 @@
 
 ## 1. 核心思路
 
-调度分两种状态，参数完全分治：
+**v7：一条连续增益曲线 + 一个加速条件，无状态、无驻留、无模式切换。**
 
-| | 交互态（触摸/滑动/前台渲染） | 非交互态（静态/后台/视频） |
+```
+target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_ceil 之间）
+```
+
+增益 `gain` 是随负载单调上升的一条直线，全程连续无阶跃：
+
+| 真实负载 raw_util | gain | 含义 |
 |---|---|---|
-| 利用率 | **原始值**，不衰减不压缩 | 尖峰衰减 + 全负载 ×`low_load_gain` 压缩 |
-| headroom 余量 | 给满（1.15~1.45） | 恒 1.0 |
-| 升频 | 旁路确认，**突增首拍一步到位** | 走 up_wait 确认 + 平滑 |
-| 降频 | 只允许匀速平滑回落，**禁止快速沉底** | 低载 ×4~4.5 快速沉底 |
-| 进入条件 | 前台最忙 App 线程 ≥`interact_fg_util` 且簇负载 ≥`down_fast_threshold` | 其余全部时间 |
-| 驻留 | `interact_hold_ticks` 拍（8 拍=0.8s），前台渲染中持续续期 | — |
+| ≤ `down_threshold` | `low_load_gain`（0.45~0.75） | 静态/轻载深度压频 |
+| ≥ `up_threshold` | `headroom_factor`（1.15~1.30） | 重载留帧余量 |
+| 两阈值之间 | 线性插值 | 平滑过渡 |
 
-前台闸门是省电的关键：实测桌面无操作时 MIUI 后台 churn 会把小核整簇利用率冲到 0.7~0.81，但**最忙前台 App 线程只有 0.03~0.05**；滑动时前台线程 0.24~0.48；视频硬解线程 0.10~0.15（低于闸门，天然走低功耗路径）。
+**升降频对称，没有驻留状态：**
+
+- **升频**默认要连续 `up_rate_limit_ticks` 拍确认，滤掉后台单拍满载毛刺；唯一例外（加速通道）：前台 App 最忙线程 ≥ `interact_fg_util` **且** 单拍负载跳升 ≥ `spike_jump_threshold`（真实手势起步）→ 当拍一步到目标。注意到的是公式算出的**被压低的目标**，不是拉满——MT 慢滑起步一步到 614MHz，而不是 2GHz。
+- **降频**：raw < `down_fast_threshold` 立即快速沉底（×4~4.5）；滞回带内按 `slow_down_scale` 步长下降。负载一掉频率就回去，不需要任何 hold。
+
+**为什么 v6 的交互态被删掉（v7 的由来）**：v6 维护 onset/sustaining/hold 状态机，前台线程偶尔一拍冲过闸门就触发"首拍 rate=1.0 × headroom 1.3"，真实 0.4 的负载被算成 ~1.7GHz 的需求，再被 0.8s 驻留粘住。实测红果静态播放中核 72% 时间在 1500+（中位 1651），MT 慢滑这种 util 仅 0.28 的轻列表被踹到 2093/2726。补丁越叠越多（首拍拉满、驻留续期、交互态禁快降……），正是"一个谎要用一万个谎圆"。v7 全部删掉，频率只跟随真实负载。
+
+前台闸门仍保留为增益之外的唯一信号：桌面无操作时 MIUI 后台 churn 把整簇 util 冲到 0.7+，但最忙前台 App 线程只有 0.03~0.05；滑动时 0.4~1.0；视频硬解约 0.10~0.15（低于闸门，天然走低功耗路径）。
 
 ---
 
@@ -47,8 +57,8 @@
 ```
 ├─ src/                     Rust 守护源码（Aegis 本体）
 │  ├─ scheduler/
-│  │  ├─ cpu_load_governor.rs   ★ CLG 日常调频核心（交互态重写，见 §3.2）
-│  │  ├─ config.rs              ★ CLG 配置（新增 3 个字段）
+│  │  ├─ cpu_load_governor.rs   ★ CLG 日常调频核心（v7 无状态重写，见 §3.2）
+│  │  ├─ config.rs              ★ CLG 配置（v7 精简字段，见 §3.2）
 │  │  ├─ mod.rs                 ★ 调度线程（tick 100ms / 模式切换刷 module.prop）
 │  │  ├─ scheduler.rs / monitor_health.rs
 │  │  └─ fas/                   FAS 游戏帧感知调度（PID/帧管线/档位，未改算法）
@@ -63,13 +73,14 @@
 │  ├─ rules.yaml            ★ 8Gen2 FAS 定值 + FAS 开关语义（§4.2）
 │  ├─ service.sh / customize.sh / uninstall.sh / module.prop  ★ Aegis 品牌化
 │  └─ config/i18n/          守护日志中文化
-├─ webui/                   Vue WebUI 源码（品牌化 + FAS 开关 + 充电/温控页入口）
+├─ webui/                   Vue WebUI 源码（品牌化 + FAS 开关 + 充电/温控页）
+│  └─ src/views/ChargeView.vue  ★ 修复充电表单轮询回填覆盖编辑（见 §3.6）
 ├─ xtask/                   打包任务（产物名 yumi→Aegis、aegis-*.zip）
 ├─ prebuilt/                ★ 真机验证过的可刷整包（含充电阈值/温控全家桶）
 ├─ tools/
 │  └─ aegis_cpu_probe.sh    ★ 换新设备时的硬件探测脚本
 └─ docs/
-   ├─ Aegis调参说明.txt      ★ 完整参数调参手册（每个参数调高/调低的影响）
+   ├─ Aegis调参说明.txt      ★ 完整参数调参手册（v7 版，每个参数的影响）
    ├─ monitor-recovery.md   上游文档
    └─ upstream-README*.md   原版 yumi 的 README 备份
 ```
@@ -90,31 +101,19 @@
 - `rules.yaml` 字段 `yumi_scheduler` → `aegis_scheduler`，serde 加了 `alias = "yumi_scheduler"`，**旧规则文件直接兼容**。
 - WebUI：整体品牌化为 Aegis，首页/应用规则页/日志页中文化重排，新增充电（ChargeView）/温控（ThermalView）页面入口与 shield 图标，FAS 开关与模式切换接入。
 
-### 3.2 CLG 日常调频核心（`src/scheduler/cpu_load_governor.rs`，v1→v6 的修复全部在此）
+### 3.2 CLG 日常调频核心（`src/scheduler/cpu_load_governor.rs`）
 
-**新增 3 个配置字段**（`src/scheduler/config.rs`，均有 serde default + normalize 区间钳制，旧配置缺字段也能跑）：
+**v1→v6 的演进**：低载增益压缩（v5）→ 前台闸门 + 交互态状态机 + 驻留（v6）。v6 解决了滑动起步迟滞，但引入了静态空高（见 §1）。
 
-| 字段 | 默认 | 含义 |
-|---|---|---|
-| `low_load_gain` | 1.0（代码默认）/ 0.45~0.75（本机定值） | 非交互态目标性能压缩增益，1.0=跟随原负载=旧行为 |
-| `interact_hold_ticks` | 8 | 交互驻留拍数，1 tick=100ms，钳制 ≤50；0=关闭交互态 |
-| `interact_fg_util` | 0.25 | 前台闸门：最忙前台 App 线程（UI/RenderThread）利用率阈值，0=不校验 |
+**v7 重写（当前版本，无状态）**：
 
-**逻辑重写（`on_load_update(&core_utils, fg_max_util)`，签名新增前台利用率入参）：**
-
-1. **交互态判定全部基于压缩前原始 util**：
-   - 入场 `onset = hold_ticks>0 && 前台线程util≥interact_fg_util && 簇原始util≥down_fast_threshold`。**不要求负载跳变**——低速慢拖是 0.1→0.35 平缓爬升，v3 曾要求 jump 阈值，结果慢拖永远进不了交互态。
-   - 驻留续期 `sustaining` 同样要求前台在忙（v6 修复：v5 续期不校验前台，MIUI 后台噪声曾让交互态永久锁死）；松手 fling 惯性动画由前台 RenderThread 天然续期。
-   - hold 在判定后倒计时；前台一停，最迟 `interact_hold_ticks`（0.8s）后必退。
-2. **交互态**：util 走原始值（旁路尖峰衰减和压缩）；headroom=`headroom_factor` 给满；升频跳过 `up_wait` 确认且 onset 首拍 `rate=1.0` 一步到位（其后拍正常 smoothing_up）；降频只允许匀速 smoothing_down，禁用 ×4.5 快速沉底。
-3. **非交互态**：
-   - 尖峰衰减保留（`util - jump*(1-spike_decay)`，仅当 jump≥spike_jump_threshold），专门滤后台孤立毛刺；
-   - **所有负载水平统一 ×`low_load_gain`**（v5 修复：原代码只在 util<up_threshold 时压缩，但 100ms 分辨率下后台任务单拍可冲 0.7~0.81，照样反复顶高小核）；
-   - **headroom 恒为 1.0**（余量是给渲染线程准备的，后台任务不需要；删掉了原版 up_threshold 附近的 headroom_ramp 线性过渡，`headroom_ramp` 字段保留仅为兼容）；
-   - 快速沉底、up/down_wait 确认照旧。
-4. tick 调试日志计数 25→50（周期减半后保持约 5s 一条）。
-
-**这解决了什么（最初的故障）**：旧链路 200ms 采样里，触摸首拍 util 先被尖峰衰减（0.30/0.35）再被 low_load_gain 压缩（0.45/0.55），两次串联后高速通道判定永远凑不齐，每段滑动开头 2~4 拍（400ms+）给频不足；松手 fast-down ×4.5 又让断续滑动反复沉底——SCENE 一秒一采看着频率匹配占用率，实际持续轻微丢帧。
+- 删除 `ClusterState.hold` 驻留计数与 onset/sustaining/interactive 全部判定分支；删除"交互态首拍 rate=1.0""交互态禁快降""交互态给满 headroom"三套分叉。
+- 删除配置字段 `interact_hold_ticks`、`spike_decay`、`headroom_ramp`（前两者随状态机一起消失，后者在 v6 就已是死字段）。
+- 每簇每拍只做：算 raw_util 与 jump → 增益线性插值得 target_perf → 升频（jump 免确认通道 / 普通确认+平滑）或降频（快速沉底 / 正常 / 滞回带慢速）→ 就近取档写频。
+- 保留字段：`up/down_threshold`、`low_load_gain`、`headroom_factor`（增益曲线两端）、`spike_jump_threshold` + `interact_fg_util`（jump 通道双条件）、`smoothing_up/down`、`up/down_rate_limit_ticks`、`slow_up/down_scale`、`down_fast_threshold/mult`、`perf_floor/ceil/init`、`up_jump_threshold`。
+- 尖峰衰减（`spike_decay`）随交互态一并删除：后台单拍毛刺改由"前台闸门 + up_wait 连续拍确认"双重过滤，前台不忙的单拍 jump 顶不起频率；真实手势的 jump 本来就不该衰减。
+- `on_load_update(&core_utils, fg_max_util)` 签名不变（fg 利用率仍为 jump 通道使用）。
+- tick 调试日志计数 50（约 5s 一条）。
 
 ### 3.3 FAS「零空转」（`app_detect.rs` + `fps_monitor.rs`）
 
@@ -131,7 +130,7 @@
 
 ### 3.4 采样与调度周期 200ms → 100ms
 
-- `monitor/cpu_monitor.rs`：CPU 采样 tick 200ms→**100ms**，快照计数 25→50。
+- `monitor/cpu_monitor.rs`：CPU 采样 tick 200ms→**100ms**，快照计数 50。
 - `scheduler/mod.rs`：调度线程 `recv_timeout` 200ms→100ms。
 - FAS 安全性已核实：`fas/controller.rs` 全部基于真实 elapsed/Instant 计时（util 采样 1000ms、cold_boot_ms、verify 1500ms、帧事件驱动的 freq_force_counter），与 tick 无关，tick 减半不影响 FAS。
 
@@ -139,26 +138,37 @@
 
 见下一节，全部落在 `module/config/config.yaml` 与 `module/rules.yaml`（与 prebuilt 整包一致）。
 
+### 3.6 WebUI 充电页编辑被弹回修复（`webui/src/views/ChargeView.vue`）
+
+现象：充电阈值页里「安全余量 / 保底电量 / 生效窗口」（以及其他字段）清空数字重新输入时，会被瞬间恢复成旧值。根因：页面每 3 秒轮询磁盘上的 `charge_guard.conf` 并整体回填表单，而旧代码的 `dirty` 标志只在"点击保存"期间置位，**用户编辑时从不置位**——编辑超过 3 秒未保存就被磁盘旧值覆盖（预约区三个字段因为要先开开关、编辑时间最长，最容易撞上）。修复：
+
+- 对 `form` 增加 `flush:'sync'` 深度 watch，用户任意修改立即置 `dirty=true`，轮询回填在 dirty 期间跳过；`fillForm()` 程序化赋值用 `populating` 护栏避免误标脏；保存成功后清 dirty。
+- 顺带修正 `sched_margin=0`、`sched_floor=0`（合法值，0 保底=不设保底）被 `parseInt(...) || 默认值` 误吞成 15/20 的问题，改为 `Number.isNaN` 判定。
+- 因构建机无 Node 环境，prebuilt 内 `webroot/index.html` 为等价的手工修补 bundle（13 个表单更新处理器统一置脏 + NaN 判定），源码以 `ChargeView.vue` 为准。
+
 ---
 
 ## 4. 8Gen2 定制参数一览
 
-### 4.1 CLG 四模式（`module/config/config.yaml`）
+### 4.1 CLG 四模式（`module/config/config.yaml`，v7 定值）
 
 | 参数 | powersave | balance | performance | fast |
 |---|---|---|---|---|
 | up_threshold | 0.75 | 0.70 | 0.55 | 0.01（锁满） |
 | down_threshold | 0.45 | 0.40 | 0.35 | 0.01 |
 | smoothing_up / down | 0.50 / 0.45 | 0.65 / 0.35 | 0.85 / 0.20 | 1.0 / 0.01 |
-| up / down rate(ticks) | 2 / 3 | 1 / 2 | 1 / 4 | 1 / 10 |
-| headroom_factor | 1.15 | 1.30 | 1.45 | 2.0 |
+| up / down rate(ticks) | 2 / 2 | 2 / 2 | 1 / 4 | 1 / 10 |
+| headroom_factor（增益高端） | 1.15 | 1.15 | 1.30 | 2.0 |
 | perf_floor / ceil / init | 0 / 0.75 / 0.25 | 0 / 1.0 / 0.35 | 0.10 / 1.0 / 0.55 | 1.0/1.0/1.0 |
-| up_jump / slow_up / slow_down | 0.35/0.10/0.40 | 0.35/0.15/0.40 | 0.35/0.15/0.35 | — |
+| **low_load_gain（增益低端）** | **0.45** | **0.55** | **0.75** | 1.0 |
+| **spike_jump_threshold** | **0.40** | **0.35** | 0.35 | 0.35 |
+| interact_fg_util（jump 闸门） | 0.25 | 0.25 | 0.25 | 0.25 |
+| up_jump / slow_up / slow_down | 0.35/0.10/**0.50** | 0.35/0.15/**0.50** | 0.35/0.15/0.35 | — |
 | down_fast_thresh / mult | 0.30 / 4.5 | 0.30 / 4.0 | 0.15 / 3.0 | — |
-| spike_jump / spike_decay | 0.35 / 0.30 | 0.30 / 0.35 | 0.35 / 0.30 | — |
-| **low_load_gain** | **0.45** | **0.55** | **0.75** | 1.0 |
-| **interact_hold_ticks** | **8** | **8** | **10** | 15 |
-| **interact_fg_util** | **0.25** | 0.25 | 0.25 | 0.25 |
+
+三档性格：省电档压得最深（gain 0.45 / ceil 0.75 / jump 门槛最高 0.40），只有真实手势起步才直通，回退快；标准档压频略浅、不封上限、jump 0.35 更跟手；性能档低门槛、快升、缓降（down_wait=4）并保留 0.10 底频，档位性格即"倾向驻留高位"。
+
+v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配置与代码中删除。
 
 ### 4.2 FAS 游戏档（`module/rules.yaml`，要点）
 
@@ -180,24 +190,56 @@
 
 ---
 
-## 5. 真机实测数据（2026-10-15 CLG v6）
+## 5. 真机实测数据（2026-10-15 CLG v7）
 
-设置页（com.android.settings，1080×2520）脚本注入滑动 + GFX 统计：
+### 5.1 钉频对照——酷安信息流的真实频率门槛
 
-| 指标 | balance | powersave |
+方法论：停掉守护，把大核 policy7 封死在 864MHz（逼渲染线程留在中核，排除 MIUI 触摸加速把任务迁去 X3 的干扰），中核 policy3 逐档钉频跑同一组 16 次慢拖+快滑，`dumpsys gfxinfo com.coolapk.market` 量帧：
+
+| p3 钉频 | 95 / 99 分位 | Janky(legacy) | 结论 |
+|---|---|---|---|
+| 1171 MHz | 28 / 42 ms | 97.6% | 明显卡 |
+| 1401 MHz | 23 / 32 ms | 82.0% | 卡 |
+| 1651 MHz | 18 / 26 ms | 36.7% | 勉强 |
+| **1920 MHz** | **17 / 23 ms** | **19.6%** | **流畅，省电档按此线给频** |
+
+对照实验同时确认：酷安滑动时大核利用率仅 8~16%，p7 被踹到 2GHz+ 纯属浪费。
+
+### 5.2 v6 → v7 频率对比（均为省电档，酷安/红果由规则自动匹配 powersave）
+
+**MT 管理器（bin.mt.plus，轻量文件列表）**：
+
+| 指标 | v6 交互态 | v7 |
 |---|---|---|
-| Total frames / Janky | 2454 / **1（0.04%）** | 2868 / **1（0.03%）** |
-| Missed Vsync | **0** | **0** |
-| 95 / 99 分位帧耗时 | 15 / 16 ms | 14 / 15 ms |
+| 静止 p3 中位 | 499 | 499 |
+| 慢滑 p3 中位 | 1171（常跳 2093/2726） | **499~614**，≥1500 仅 3% |
+| 大核 ≥2GHz 占比 | 频繁 | 3% |
 
-频率轨迹（balance）：
+**红果短剧（com.phoenix.read，静态播放 40s，87 个采样）**：
 
-- 桌面静态 pins：p0=902400（后台有 churn 时）/ 最低 556800、**p3=614400、p7=595200 贴硬件底**；
-- 首次快滑起步：−126ms 时 672/614/730 kHz → **+211ms 已到 1786/2458/2093 kHz**（旧版最坏 400ms+）；
-- 快滑段：p0 中位 1555、p3 中位 1536 / max 2458；
-- 慢拖段：p0 中位 1555、p3 max 2803、p7 max 3187（重负载大核兜底）；
-- 松手后：1s 内退出交互态，POST 1-5s p0 中位 787、5-9s 回到 557，p3 回 499~614；
-- 守护连续运行零 panic（`grep -c panic logs/daemon.log` = 0）。
+| 指标 | v6 | v7 |
+|---|---|---|
+| p3 中位 | 1651 | **614** |
+| p3 ≥1500 占比 | 72% | **16%** |
+| p3 ≤1171 占比 | 少数 | **78%** |
+| 前台最忙线程 util | ~0.14 | ~0.15（信号一致，证明负载没变，是给频变了） |
+
+**酷安（com.coolapk.market，16 次慢拖+快滑）**：
+
+| 指标 | v7 原参 | v7 省电档定参（down_wait 3→2 / slow_down 0.40→0.50 / jump 0.35→0.40） |
+|---|---|---|
+| p3 中位 | 2054 | **1920**（=钉频流畅线） |
+| 顶格 2188 占比 | 24% | **16%** |
+| 大核 ≥2GHz 占比 | 7% | **3%** |
+| GFX Janky / Missed Vsync | 0 / 0 | **0 / 0** |
+| 95 / 99 分位 | 17 / 24 ms | **17 / 22 ms** |
+
+调参方法备注：先录制逐拍簇 util/前台线程 util 轨迹，本地按 governor 公式回放扫参数，再只把候选档上真机 A/B（含 GFX）；曾试中位 1786 的更激进档，零丢帧但 95 分位升到 18ms、legacy 卡顿率明显上涨，低于钉频流畅线，弃用。
+
+### 5.3 稳定性
+
+- 守护连续运行零 panic（`grep -c panic logs/daemon.log` = 0）；
+- 静态桌面 p3 贴 499~614，打字/微信消息场景主观可接受（用户确认）。
 
 ---
 
@@ -237,31 +279,32 @@ prebuilt 里的整包 = 调度模块 + 充电阈值/温控脚本与二进制（c
                    chmod 755 /data/adb/modules/aegis_power_matrix/core/bin/Aegis;
                    setsid nohup /data/adb/modules/aegis_power_matrix/core/bin/Aegis >/dev/null 2>&1 &'
   ```
+- **注意**：`config.yaml` 只在守护启动和切模式时读取，直接 cp 配置不会热重载（inotify 热重载管的是 rules.yaml/模式切换链路）；改完配置需重启守护。
 - live 模块路径：`/data/adb/modules/aegis_power_matrix/`；刷入待生效：`/data/adb/modules_update/`
 - 日志：`logs/daemon.log`（log4rs 落盘；service.sh 停了 logd 也能看）。临时开 DEBUG：sed 改 `config/config.yaml` 的 `loglevel: "DEBUG"`，守护约 2s 内热重载，**测完务必改回 INFO**。
 - 切模式：改 `rules.yaml` 的 `global_mode`（守护 3s 轮询）或 WebUI；直接改 `current_mode.txt` 无效（它是守护写出的状态）。
 
 ## 8. 调参手册
 
-完整参数说明见 [docs/Aegis调参说明.txt](docs/Aegis调参说明.txt)（含 perf↔频率换算、每个参数调高/调低的影响、推荐范围与调参纪律）。最常动的三个：
+完整参数说明见 [docs/Aegis调参说明.txt](docs/Aegis调参说明.txt)（含 perf↔频率换算、每个参数调高/调低的影响、推荐范围与调参纪律）。v7 最常动的三个：
 
-- `interact_hold_ticks`：滑动后高频驻留时长。觉得断续滑动松频太早 → 加到 10；觉得松手后太费电 → 降到 5~6。
-- `interact_fg_util`：前台闸门。视频播放器被误给频 → 调到 0.30；慢滑开头觉得肉 → 0.20。
-- `low_load_gain`：静态压频力度。静态还想更省电 → 0.40（低于 0.4 非触摸前台重活会变慢）；觉得安装/计算变慢 → 0.60。
+- `low_load_gain`：增益曲线低端，静态压频力度。静态还想更省电 → 0.40（低于 0.4 非触摸前台重活会变慢）；觉得安装/计算变慢 → 0.60。
+- `spike_jump_threshold`：手势起步当拍升频的跳变门槛。滑动觉得粘高档空高 → 往 0.40 调；慢滑开头觉得肉 → 往 0.30 调（只影响"到得多快"，不影响到多高）。
+- `slow_down_scale`：滞回带内下降速度。信息流滑动中频率回落太慢 → 往 0.50~0.60 调。
 
-原则：**流畅靠「低地板 + 交互态快速回收」，不要抬 perf_floor 换流畅**。
+原则：**流畅靠「低地板 + 连续增益曲线 + jump 当拍起步 + 快速沉底」，不要抬 perf_floor，也不要重新引入驻留/状态补丁**。怀疑某场景给频不够时，先钉频 + GFX 量出真实流畅线（见 §5.1 酷安实验），再反推增益。
 
 ## 9. 换设备移植流程
 
 1. 把 [`tools/aegis_cpu_probe.sh`](tools/aegis_cpu_probe.sh) 推手机跑（脚本头有用法），拿到：分簇/policy 归属、每簇硬件频率表、每核 cpu_capacity。
 2. 按 `权重 = 1 + √(本簇cap/最小簇cap − 1)` 算各簇权重，写入 `rules.yaml` 的 `cluster_profiles` 并置 `auto_capacity_weight: false`；更新 `rules.yaml` 头部与 `config.yaml` 头部频率注释。
-3. perf↔频率换算：`频率 = 最低频 + perf×(最高频−最低频)`，据此重定 FAS 的 perf_floor/init 与四模式 perf_init；CLG 的比例类参数（阈值/gain/驻留）跨 SoC 通用，一般不用动。
-4. 编译（§6），刷入后用 `dumpsys gfxinfo <pkg> reset` + 滑动脚本验证起步延迟与 jank，再按 §8 微调到主观手感。
+3. perf↔频率换算：`频率 = 最低频 + perf×(最高频−最低频)`，据此重定 FAS 的 perf_floor/init 与四模式 perf_init；CLG 的比例类参数（阈值/增益/jump 门槛）跨 SoC 通用，一般不用动。
+4. 编译（§6），刷入后用 `dumpsys gfxinfo <pkg> reset` + 滑动脚本验证起步延迟与 jank；重负载信息流建议按 §5.1 钉频量一次真实流畅线再定省电档 ceil/gain，最后按 §8 微调到主观手感。
 
 ## 10. 设计红线与注意事项
 
 - 温控阈值、充电阈值（charge_guard 配置）**绝不因调度问题改动**；它们由模块族独立组件管理。
 - 静态省电是第一诉求（小核 800MHz 级别），修丢帧不得靠抬高静态 floor。
 - perf 写频是 min=max 钉频（performance governor）：升频先 max 后 min，降频先 min 后 max；取档 `find_nearest_freq` 就近。
-- 非交互态全负载压缩的已知代价：App 在前台做非触摸重活（JS 计算、安装）且前台线程 util<0.25 时会被压频——无帧延迟约束，可接受。
+- 低增益压频的已知代价：App 在前台做非触摸重活（JS 计算、安装）且前台线程 util 低于闸门、又没有大跳变时会被压频——无帧延迟约束，可接受。
 - 本仓库为私人使用，不处理社群 Issue；上游许可证 GPL-3.0-or-later 继续生效，原作者 yuki。
