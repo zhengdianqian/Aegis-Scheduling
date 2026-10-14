@@ -2,11 +2,32 @@
 import { ref, onMounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Bridge } from '@/utils/bridge';
-import { getPackagesInfo } from '@/kernelsu';
+import { getPackagesInfo, toast } from '@/kernelsu';
 import { useSchedulerStore } from '@/stores/scheduler';
 
 const { t } = useI18n();
 const store = useSchedulerStore();
+
+// FAS 全局开关（写入 rules.yaml 的 fas_enabled，守护进程热加载）
+const fasEnabled = ref(true);
+const fasLoading = ref(false);
+
+const onFasToggle = async (v: boolean) => {
+  fasLoading.value = true;
+  const prev = fasEnabled.value;
+  fasEnabled.value = v;
+  try {
+    const rules = await Bridge.getRulesConfig();
+    rules.fas_enabled = v;
+    await Bridge.saveRulesConfig(rules);
+    toast(t('fas_switch_saved') as string);
+  } catch (e) {
+    fasEnabled.value = prev;
+    toast(t('save_failed') as string);
+  } finally {
+    fasLoading.value = false;
+  }
+};
 
 // pkg → appLabel 映射
 const appLabelMap = ref<Record<string, string>>({});
@@ -50,6 +71,14 @@ onMounted(async () => {
   }
 
   await store.initData();
+
+  // 读取 FAS 全局开关当前状态
+  try {
+    const rules = await Bridge.getRulesConfig();
+    fasEnabled.value = rules.fas_enabled !== false;
+  } catch (e) {
+    // 读取失败保持默认，不影响应用列表
+  }
 });
 
 // 用应用名或包名都能搜到
@@ -85,6 +114,24 @@ const onSelectAction = async (item: any) => {
 <template>
   <div class="app-rules">
     <van-nav-bar :title="t('app_management')" left-arrow @click-left="$router.back()" fixed placeholder />
+
+    <!-- FAS 全局总开关 -->
+    <div class="fas-card">
+      <div class="fas-head">
+        <van-icon name="fire-o" size="22" color="#E91E63" />
+        <span class="fas-title">{{ t('fas_switch_title') }}</span>
+        <van-switch
+          v-model="fasEnabled"
+          size="22px"
+          active-color="#E91E63"
+          :loading="fasLoading"
+          @change="onFasToggle"
+        />
+      </div>
+      <div class="fas-hint">
+        {{ fasEnabled ? t('fas_switch_on_hint') : t('fas_switch_off_hint') }}
+      </div>
+    </div>
 
     <van-search v-model="searchText" :placeholder="t('search_apps')" />
 
@@ -126,4 +173,29 @@ const onSelectAction = async (item: any) => {
 
 <style scoped>
 .no-rule { font-size: 12px; color: #bbb; }
+
+.fas-card {
+  margin: 12px 12px 4px;
+  padding: 14px 16px 12px;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+.fas-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fas-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 700;
+  color: #1f2329;
+}
+.fas-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #969799;
+}
 </style>

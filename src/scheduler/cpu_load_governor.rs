@@ -56,6 +56,8 @@ struct ClusterState {
     up_wait: u32,
     /// 上一 tick 的原始 max_util，用于尖峰跳升检测
     last_util: f32,
+    /// 交互态剩余拍数（>0 时处于手势交互窗口）
+    hold: u32,
 }
 
 impl ClusterState {
@@ -224,6 +226,7 @@ impl CpuLoadGovernor {
                 down_wait: 0,
                 up_wait: 0,
                 last_util: 0.0,
+                hold: 0,
             };
 
             let init_freq = cluster.find_nearest_freq(init_perf);
@@ -331,68 +334,128 @@ impl CpuLoadGovernor {
         all_ok
     }
 
-    pub fn on_load_update(&mut self, core_utils: &[f32]) {
+    pub fn on_load_update(&mut self, core_utils: &[f32], fg_max_util: f32) {
         if !self.active { return; }
 
         for cluster in &mut self.clusters {
             let raw_util = cluster.max_util(core_utils);
-            // 尖峰抑制：单 tick 跳升超过阈值时衰减其增量，
-            // 孤立瞬时尖峰（如单核 0↔100%）不瞬间拉满 perf；
-            // 持续负载下一 tick jump 归零即全量生效，不拖慢真实升频
-            let util = if raw_util > cluster.last_util + self.cfg.spike_jump_threshold {
-                cluster.last_util + (raw_util - cluster.last_util) * self.cfg.spike_decay
+            let jump = raw_util - cluster.last_util;
+
+            // ── 交互态检测（全部基于压缩前的原始 util）──────────────────────
+            // 入场：前台 App 最忙线程（UI/RenderThread）超过 interact_fg_util
+            //   且本簇原始负载达到 down_fast_threshold（极低负载线）。
+            // 不要求负载"跳变"——低速慢拖的负载是从静态平缓爬升的（0.1→0.35），
+            // 若要求 jump 阈值，整个慢拖手势都会停在压缩路径里，正是信息流
+            // 慢滑丢帧的来源。前台闸门足以排除 MIUI 后台同步等系统噪声
+            // （实测无交互时前台线程利用率仅 0.03~0.05）。
+            // 高负载线（raw>=up_threshold）在前台忙时自然包含在入场条件内。
+            let fg_active = fg_max_util >= self.cfg.interact_fg_util;
+            // 驻留续期：交互态内前台仍在渲染（含松手后的 fling 惯性动画，
+            // RenderThread 属于前台进程）且簇负载不低于极低负载线时刷新计时，
+            // 覆盖停顿再拖；前台一旦真正空闲，hold 最迟 interact_hold_ticks
+            // 后必然退出，杜绝后台噪声让交互态永久锁死。
+            let onset = self.cfg.interact_hold_ticks > 0
+                && fg_active
+                && raw_util >= self.cfg.down_fast_threshold;
+            let sustaining = cluster.hold > 0
+                && fg_active
+                && raw_util >= self.cfg.down_fast_threshold;
+            if onset || sustaining {
+                cluster.hold = self.cfg.interact_hold_ticks.max(1);
+            }
+            let interactive = cluster.hold > 0;
+            // 本拍判定用当前 hold，判定后倒计时（续期成功会重新填满）
+            if cluster.hold > 0 {
+                cluster.hold -= 1;
+            }
+            cluster.last_util = raw_util;
+
+            // ── 有效负载：尖峰抑制只在非交互态生效 ─────────────────────────
+            // 旧实现对触摸首拍先做尖峰衰减、再做低载压缩，两次串联后高速
+            // 通道阈值永远凑不齐，造成每段滑动开头 2~4 拍的给频延迟（丢帧）。
+            // 交互态直接使用原始负载；尖峰抑制仅保留给前台空闲时的后台
+            // 孤立噪声尖峰（前台闸门挡住了所有触摸类负载）。
+            let util = if !interactive && jump >= self.cfg.spike_jump_threshold {
+                raw_util - jump * (1.0 - self.cfg.spike_decay)
             } else {
                 raw_util
             };
-            cluster.last_util = raw_util;
 
-            // headroom 在 up_threshold 附近线性过渡，避免阶跃导致的振荡
-            let ramp_start = self.cfg.up_threshold - self.cfg.headroom_ramp;
-            let headroom = if util >= self.cfg.up_threshold {
+            // headroom 余量只在交互态给满（帧级突发需要缓冲）；非交互态恒为
+            // 1.0——余量是为渲染线程准备的，后台任务（同步/厂商服务）不需要，
+            // 给余量只会让静态频率随锯齿虚高。
+            let headroom = if interactive {
                 self.cfg.headroom_factor
-            } else if util > ramp_start {
-                let t = ((util - ramp_start) / self.cfg.headroom_ramp.max(1e-6)).clamp(0.0, 1.0);
-                1.0 + (self.cfg.headroom_factor - 1.0) * t
             } else {
                 1.0
             };
 
-            let target_perf = (util * headroom)
+            // 低/中载目标压缩：非交互态（前台 App 线程不忙）下对所有负载水平
+            // 都按增益压缩——100ms 采样能看到 MIUI 后台任务的单拍满载突发，
+            // 若只在 up_threshold 以下压缩，这类锯齿会反复把频率顶到高档并
+            // 慢速回落，静态功耗虚高；后台任务没有帧延迟约束，中档频即可。
+            // 交互态（触摸/滑动/前台渲染）不压缩，保证供给。
+            let effective_util = if interactive {
+                util
+            } else {
+                util * self.cfg.low_load_gain
+            };
+
+            let target_perf = (effective_util * headroom)
                 .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
             let old_perf = cluster.current_perf;
 
             if target_perf > old_perf {
                 cluster.down_wait = 0;
-                cluster.up_wait += 1;
 
-                // 升频速率限制：必须连续 up_rate_limit_ticks 才执行
-                if cluster.up_wait < self.cfg.up_rate_limit_ticks {
-                    continue;
-                }
-
-                let is_high_load = util >= self.cfg.up_threshold; 
-                let is_significant_jump = target_perf > old_perf + self.cfg.up_jump_threshold; 
-
-                if is_high_load || is_significant_jump {
-                    cluster.current_perf += (target_perf - old_perf) * self.cfg.smoothing_up;
+                if interactive {
+                    // 交互态升频：跳过 up_wait 确认；突增首拍（onset）直接
+                    // 一步到位，消除采样+确认+平滑三重滞后；后续拍正常平滑
+                    cluster.up_wait = 0;
+                    let rate = if onset {
+                        1.0
+                    } else {
+                        self.cfg.smoothing_up
+                    };
+                    cluster.current_perf += (target_perf - old_perf) * rate;
                 } else {
-                    // 滞回带内升频：速率随 util 接近 up_threshold 线性提升——
-                    // 低 util 端用 slow_up_scale 防抖，高 util 端逼近全速，
-                    // 避免中等负载（如 73%）下 0.008/tick 的慢速爬升导致体验卡顿
-                    let span = (self.cfg.up_threshold - self.cfg.down_threshold).max(1e-6);
-                    let gap = ((util - self.cfg.down_threshold) / span).clamp(0.0, 1.0);
-                    let speed = self.cfg.smoothing_up
-                        * (self.cfg.slow_up_scale + (1.0 - self.cfg.slow_up_scale) * gap);
-                    cluster.current_perf += (target_perf - old_perf) * speed; 
+                    cluster.up_wait += 1;
+
+                    // 升频速率限制：必须连续 up_rate_limit_ticks 才执行
+                    if cluster.up_wait < self.cfg.up_rate_limit_ticks {
+                        continue;
+                    }
+
+                    let is_high_load = util >= self.cfg.up_threshold;
+                    let is_significant_jump = target_perf > old_perf + self.cfg.up_jump_threshold;
+
+                    if is_high_load || is_significant_jump {
+                        cluster.current_perf += (target_perf - old_perf) * self.cfg.smoothing_up;
+                    } else {
+                        // 滞回带内升频：速率随 util 接近 up_threshold 线性提升——
+                        // 低 util 端用 slow_up_scale 防抖，高 util 端逼近全速，
+                        // 避免中等负载（如 73%）下 0.008/tick 的慢速爬升导致体验卡顿
+                        let span = (self.cfg.up_threshold - self.cfg.down_threshold).max(1e-6);
+                        let gap = ((util - self.cfg.down_threshold) / span).clamp(0.0, 1.0);
+                        let speed = self.cfg.smoothing_up
+                            * (self.cfg.slow_up_scale + (1.0 - self.cfg.slow_up_scale) * gap);
+                        cluster.current_perf += (target_perf - old_perf) * speed;
+                    }
                 }
             } else {
                 cluster.up_wait = 0;
                 cluster.down_wait += 1;
-                // 极低负载立即快速降频（跳过 down_wait 确认期），
-                // 消除尖峰消失后 perf 长时间悬停高位的滞后
-                if cluster.down_wait >= self.cfg.down_rate_limit_ticks
+
+                if interactive {
+                    // 交互态降频：手势窗口内只允许匀速平缓回落，
+                    // 禁止极低载快速沉底（×4.5），手指停顿/再拖时不付起步延迟
+                    cluster.current_perf +=
+                        (target_perf - old_perf) * self.cfg.smoothing_down;
+                } else if cluster.down_wait >= self.cfg.down_rate_limit_ticks
                     || util < self.cfg.down_fast_threshold
                 {
+                    // 极低负载立即快速降频（跳过 down_wait 确认期），
+                    // 消除尖峰消失后 perf 长时间悬停高位的滞后
                     // 降频门控：只要目标低于当前即可降，避免滞回带内锁死高位
                     let active_smoothing_down = if util < self.cfg.down_fast_threshold {
                         // 极低负载：快速回落
@@ -414,7 +477,7 @@ impl CpuLoadGovernor {
         }
 
         self.log_counter += 1;
-        if self.log_counter % 25 == 0 {
+        if self.log_counter % 50 == 0 {
             for c in &self.clusters {
                 debug!("{}", t_with_args("clg-tick-log", &fluent_args!(
                     "pid" => c.policy_id.to_string(),

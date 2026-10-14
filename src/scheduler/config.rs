@@ -65,7 +65,22 @@ pub struct CpuLoadGovernorConfig {
     #[serde(default = "d_clg_spike_jump")] pub spike_jump_threshold: f32,
     /// 尖峰增量保留比例（0.0=完全抑制，1.0=不抑制）
     #[serde(default = "d_clg_spike_decay")] pub spike_decay: f32,
+    /// 低负载目标压缩：util < down_threshold 时目标按此增益缩放，
+    /// 使静态/轻载场景（如小说、短视频）稳定在较低频档（Aegis 8Gen2 适配）
+    #[serde(default = "d_clg_low_gain")] pub low_load_gain: f32,
+    /// 交互驻留时长（tick 数，1tick=100ms）：检测到负载突增（触摸/滑动）后
+    /// 进入交互态的保持拍数。交互态内：跳过低载压缩与尖峰衰减、升频免确认
+    /// 且当拍到位、按满载 headroom 留余量、禁止快速沉底。手势停止后经此时长
+    /// 才回到省电压缩路径，避免断续滑动反复支付起步延迟。0 = 关闭交互态。
+    #[serde(default = "d_clg_interact_hold")] pub interact_hold_ticks: u32,
+    /// 交互态前台闸门：仅当最忙前台 App 线程利用率（UI/RenderThread）超过此
+    /// 值时，负载突增才被认定为触摸交互。用于排除系统后台突发（后台同步/
+    /// 厂商服务）误触驻留导致静态频率被顶高。0 = 不校验前台。
+    #[serde(default = "d_clg_interact_fg")] pub interact_fg_util: f32,
 }
+
+fn d_clg_interact_hold() -> u32 { 8 }
+fn d_clg_interact_fg() -> f32 { 0.25 }
 
 fn d_clg_up_thresh() -> f32 { 0.80 }
 fn d_clg_down_thresh() -> f32 { 0.50 }
@@ -85,6 +100,7 @@ fn d_clg_down_fast_thresh() -> f32 { 0.10 }
 fn d_clg_down_fast_mult() -> f32 { 2.5 }
 fn d_clg_spike_jump() -> f32 { 0.35 }
 fn d_clg_spike_decay() -> f32 { 0.30 }
+fn d_clg_low_gain() -> f32 { 1.0 }
 
 impl Default for CpuLoadGovernorConfig {
     fn default() -> Self {
@@ -108,6 +124,9 @@ impl Default for CpuLoadGovernorConfig {
             down_fast_mult: d_clg_down_fast_mult(),
             spike_jump_threshold: d_clg_spike_jump(),
             spike_decay: d_clg_spike_decay(),
+            low_load_gain: d_clg_low_gain(),
+            interact_hold_ticks: d_clg_interact_hold(),
+            interact_fg_util: d_clg_interact_fg(),
         }
     }
 }
@@ -134,6 +153,7 @@ impl CpuLoadGovernorConfig {
         if !self.down_fast_mult.is_finite() { self.down_fast_mult = d_clg_down_fast_mult(); }
         if !self.spike_jump_threshold.is_finite() { self.spike_jump_threshold = d_clg_spike_jump(); }
         if !self.spike_decay.is_finite() { self.spike_decay = d_clg_spike_decay(); }
+        if !self.low_load_gain.is_finite() { self.low_load_gain = d_clg_low_gain(); }
 
         // 区间限制（语义约束）
         self.up_threshold = self.up_threshold.clamp(0.0, 1.0);
@@ -150,6 +170,12 @@ impl CpuLoadGovernorConfig {
         self.down_fast_threshold = self.down_fast_threshold.clamp(0.0, 1.0);
         self.spike_jump_threshold = self.spike_jump_threshold.clamp(0.0, 1.0);
         self.spike_decay = self.spike_decay.clamp(0.0, 1.0);
+        // 低负载增益语义：(0.1..=1.0]，1.0 = 跟随原始负载（旧行为）
+        self.low_load_gain = self.low_load_gain.clamp(0.1, 1.0);
+        // 交互驻留上限 50 拍 = 5s，防止异常值导致交互态长期不退出
+        self.interact_hold_ticks = self.interact_hold_ticks.min(50);
+        if !self.interact_fg_util.is_finite() { self.interact_fg_util = d_clg_interact_fg(); }
+        self.interact_fg_util = self.interact_fg_util.clamp(0.0, 1.0);
         self.headroom_ramp = self.headroom_ramp.clamp(0.0, 1.0);
         // headroom 语义 >= 1（余量放大），down_fast_mult 语义 >= 1（放大）
         self.headroom_factor = self.headroom_factor.clamp(1.0, 3.0);

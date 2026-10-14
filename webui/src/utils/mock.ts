@@ -1,8 +1,9 @@
 // src/utils/mock.ts
 const mockRules = {
-  yumi_scheduler: true,
+  aegis_scheduler: true,
+  fas_enabled: true,
   dynamic_enabled: true,
-  global_mode: "powersave",
+  global_mode: "balance",
   app_modes: {
     'com.miHoYo.GenshinImpact': 'fas',
     'com.tencent.tmgp.sgame': 'fas',
@@ -25,7 +26,7 @@ const mockRules = {
 };
 
 const mockConfig = {
-  meta: { name: "default_config", author: "yuki", language: "en", loglevel: "INFO" },
+  meta: { name: "aegis_config", author: "Aegis", language: "zh", loglevel: "INFO" },
   function: { CpuIdleScalingGovernor: false, IOOptimization: true },
   IO_Settings: { Scheduler: "none", read_ahead_kb: "128", nomerges: "2", iostats: "0" },
   CpuIdle: { current_governor: "" },

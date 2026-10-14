@@ -74,7 +74,7 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<()> {
     let mut last_threads: HashMap<u32, u64> = HashMap::new();
     let mut last_pid = 0;
     let mut last_time = get_ktime_ns();
-    let mut tick = tokio::time::interval(Duration::from_millis(200));
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut count = 0u32;
     info!("[CPU Monitor] CPU eBPF monitor initialized");
@@ -169,7 +169,7 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<()> {
             continue;
         }
         count = count.wrapping_add(1);
-        if count % 25 == 0 {
+        if count % 50 == 0 {
             debug!(
                 "[CPU Monitor] cores={core_utils:?}, pid={pid}, foreground={foreground_max_util:.3}"
             );

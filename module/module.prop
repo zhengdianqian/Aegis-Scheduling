@@ -1,7 +1,6 @@
-id=yumi
-name=yumi
-version=v2.0.2
-versionCode=20002
-author=yuki
-description= yumi
-updateJson=https://raw.githubusercontent.com/imacte/yumi/main/updateInformation/update.json
+id=aegis
+name=Aegis 调度
+version=v2.0.2-aegis
+versionCode=20003
+author=Aegis
+description=eBPF 负载调频 · 帧感知调度（Aegis 守护 / FAS 零空转）· 充电阈值 · 温控

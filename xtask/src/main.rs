@@ -95,7 +95,7 @@ fn build(sh: &Shell) -> Result<()> {
     
     file::copy(
         aarch64_bin_path(),
-        bin_path.join("yumi"),
+        bin_path.join("Aegis"),
         &file::CopyOptions::new().overwrite(true),
     )?;
     
@@ -111,7 +111,7 @@ fn build(sh: &Shell) -> Result<()> {
     fs::create_dir_all(output_dir)?; // 确保 output 目录存在
     
     let zip_filename = format!(
-        "yumi-{}-{}-{}.zip",
+        "aegis-{}-{}-{}.zip",
         data.package.version,
         cal_git_code(sh)?,
         get_date()
@@ -138,7 +138,7 @@ fn aarch64_bin_path() -> PathBuf {
     Path::new("target")
         .join("aarch64-linux-android")
         .join("release")
-        .join("yumi")
+        .join("Aegis")
 }
 
 fn build_core(sh: &Shell) -> Result<()> {

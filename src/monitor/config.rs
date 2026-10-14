@@ -29,7 +29,13 @@ pub fn get_rules_path() -> PathBuf { common::get_module_root().join("rules.yaml"
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RulesConfig {
-    #[serde(default = "crate::utils::default_true")] pub yumi_scheduler: bool,
+    // Aegis: renamed from yumi_scheduler, alias keeps old rules.yaml working.
+    #[serde(default = "crate::utils::default_true", alias = "yumi_scheduler")]
+    pub aegis_scheduler: bool,
+    /// Master switch for the whole FAS subsystem (eBPF frame probe).
+    /// When false the FPS monitor never loads its probes and stays fully idle.
+    #[serde(default = "crate::utils::default_true")]
+    pub fas_enabled: bool,
     pub dynamic_enabled: bool,
     pub global_mode: String,
     pub app_modes: HashMap<String, String>,

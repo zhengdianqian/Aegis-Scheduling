@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use log::{info, warn, debug};
-use inotify::{Inotify, WatchMask};
+use inotify::{EventMask, Inotify, WatchMask};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, AtomicI32};
 use std::error::Error;
 use std::process::Command;
@@ -36,6 +36,15 @@ use super::config::{self, RulesConfig};
 static VALID_CGROUP_IDX: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 static CURRENT_PID: AtomicI32 = AtomicI32::new(0);
+
+// Aegis: FAS gate. Only true while the screen is on, fas_enabled is set and
+// the foreground app is actually in "fas" mode. The FPS/eBPF monitor sleeps
+// (no probes loaded, no perf buffers, no uprobe) whenever this is false.
+static FAS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_fas_active() -> bool {
+    FAS_ACTIVE.load(Ordering::Relaxed)
+}
 
 // 获取系统已启用的输入法列表
 fn get_system_ime_packages() -> HashSet<String> {
@@ -107,7 +116,8 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
         "android.hardware.graphics.composer" => false,
         "com.android.phone" => false,
         "com.android.permissioncontroller" => false,
-        "yumi" => false,
+        // Aegis daemon self-exclusion (legacy name kept for safety).
+        "aegis" | "Aegis" | "yumi" => false,
         "com.xiaomi.vtcamera" => false,
         "com.android.providers.media.module" => false,
         "com.google.android.gms.ui" => false,
@@ -168,15 +178,29 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 // ==================== [辅助函数] ====================
 
 fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
-    if !config.dynamic_enabled {
-        return config.global_mode.clone();
+    // Aegis semantics:
+    //  * Per-app rule ALWAYS wins. An app explicitly assigned "fas" gets FAS
+    //    (probes wake on detection) regardless of the global FAS switch.
+    //  * fas_enabled only gates the GLOBAL fas mode. When global_mode=fas and
+    //    the switch is off, non-assigned apps fall back to balance — so the
+    //    user can disable blanket FAS while keeping FAS for chosen apps.
+    if config.dynamic_enabled {
+        if let Some(app_mode) = config.app_modes.get(current_package) {
+            return app_mode.clone();
+        }
     }
-    config.app_modes.get(current_package).cloned().unwrap_or_else(|| config.global_mode.clone())
+    let global = config.global_mode.clone();
+    if global == "fas" && !config.fas_enabled {
+        "balance".to_string()
+    } else {
+        global
+    }
 }
 
 pub fn get_default_rules() -> RulesConfig {
     RulesConfig {
-        yumi_scheduler: true,
+        aegis_scheduler: true,
+        fas_enabled: true,
         dynamic_enabled: true,
         global_mode: "balance".to_string(),
         app_modes: HashMap::new(),
@@ -193,32 +217,117 @@ pub fn watch_config_file(
     let mut inotify = Inotify::init()?;
     let rules_path = config::get_rules_path();
     if !rules_path.exists() { let _ = utils::try_write_file(&rules_path, ""); }
-    inotify.watches().add(&rules_path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)?;
+
+    // Aegis robustness fix: editors that replace the file atomically
+    // (`sed -i`, `cp`, WebUI atomic save) swap the inode, which silently kills
+    // a watch on the file itself (classic inotify rename trap). Watch the
+    // parent directory too and re-bind the file watch whenever it reappears
+    // (tail -F semantics), so reloads never die after the first rename save.
+    let rules_dir = rules_path
+        .parent()
+        .ok_or("rules.yaml has no parent directory")?;
+    let dir_wd = inotify
+        .watches()
+        .add(rules_dir, WatchMask::MOVED_TO | WatchMask::CREATE)?;
+    let mut file_wd = inotify
+        .watches()
+        .add(&rules_path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)
+        .ok();
     info!("{}", t_with_args("app-detect-config-watch", &fluent_args!("path" => format!("{:?}", rules_path))));
-    let mut buffer = [0u8; 1024];
+    let mut buffer = [0u8; 4096];
     loop {
-        let events = inotify.read_events_blocking(&mut buffer)?;
-        if events.peekable().peek().is_some() {
-            info!("{}", t("app-detect-change-detected"));
-            thread::sleep(Duration::from_millis(100));
-            while let Ok(events) = inotify.read_events(&mut buffer) { if events.peekable().peek().is_none() { break; } }
-            info!("{}", t("app-detect-reloading"));
-            
-            let new_config = crate::utils::read_config::<RulesConfig, _>(&rules_path)
-                                .unwrap_or_else(|e| { 
-                                    warn!("{}", t_with_args("app-detect-load-failed", &fluent_args!("error" => e.to_string()))); 
-                                    get_default_rules() 
-                                });
-            
-            *config_arc.lock().unwrap() = new_config.clone();
-            
-            if let Err(e) = tx.send(DaemonEvent::ConfigReload(new_config)) {
-                warn!("[Config] Failed to send ConfigReload event: {}", e);
-            }
-            
-            info!("{}", t("app-detect-reload-success"));
-            force_refresh_arc.store(true, Ordering::SeqCst);
+        let mut events = inotify.read_events_blocking(&mut buffer)?.peekable();
+        if events.peek().is_none() {
+            continue;
         }
+
+        let mut rules_touched = false;
+        let mut file_watch_gone = false;
+        for event in events {
+            if event.wd == dir_wd
+                && event.name.as_deref() == Some(std::ffi::OsStr::new("rules.yaml"))
+            {
+                // New inode appeared (or was recreated): MOVED_TO/CREATE.
+                rules_touched = true;
+            } else if Some(event.wd) == file_wd {
+                if event.mask.contains(EventMask::IGNORED) {
+                    file_watch_gone = true;
+                } else {
+                    rules_touched = true;
+                }
+            }
+        }
+
+        if file_watch_gone {
+            // Old file watch died with the replaced inode; drop the stale wd,
+            // a fresh one is (re)bound below when the new file is touched.
+            file_wd = None;
+        }
+
+        if !rules_touched {
+            continue;
+        }
+
+        // Re-bind to the current inode (no-op when the watch is still valid;
+        // required after rename-style saves).
+        if file_wd.is_none() && rules_path.exists() {
+            file_wd = inotify
+                .watches()
+                .add(&rules_path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)
+                .ok();
+        }
+
+        info!("{}", t("app-detect-change-detected"));
+        thread::sleep(Duration::from_millis(100));
+        // Drain the burst of events atomic writers emit (MOVED_TO + IGNORED,
+        // or multiple MODIFY/CLOSE_WRITE), rebinding the file watch if needed.
+        // The inotify fd is non-blocking: no pending events => WouldBlock.
+        loop {
+            match inotify.read_events(&mut buffer) {
+                Ok(events) => {
+                    let mut gone = false;
+                    for event in events {
+                        if event.wd == dir_wd
+                            && event.name.as_deref() == Some(std::ffi::OsStr::new("rules.yaml"))
+                        {
+                            rules_touched = true;
+                        } else if Some(event.wd) == file_wd
+                            && event.mask.contains(EventMask::IGNORED)
+                        {
+                            gone = true;
+                        }
+                    }
+                    if gone {
+                        file_wd = None;
+                    }
+                    if file_wd.is_none() && rules_path.exists() {
+                        file_wd = inotify
+                            .watches()
+                            .add(&rules_path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)
+                            .ok();
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        info!("{}", t("app-detect-reloading"));
+
+        let new_config = crate::utils::read_config::<RulesConfig, _>(&rules_path)
+                            .unwrap_or_else(|e| {
+                                warn!("{}", t_with_args("app-detect-load-failed", &fluent_args!("error" => e.to_string())));
+                                get_default_rules()
+                            });
+
+        *config_arc.lock().unwrap() = new_config.clone();
+
+        if let Err(e) = tx.send(DaemonEvent::ConfigReload(new_config)) {
+            warn!("[Config] Failed to send ConfigReload event: {}", e);
+        }
+
+        info!("{}", t("app-detect-reload-success"));
+        force_refresh_arc.store(true, Ordering::SeqCst);
     }
 }
 
@@ -257,7 +366,9 @@ pub fn app_detection_loop(
             }
         }
 
-        if !current_screen_state { 
+        if !current_screen_state {
+            // Aegis: screen off -> FAS probes must sleep (Doze uses CLG only).
+            FAS_ACTIVE.store(false, Ordering::Relaxed);
             thread::sleep(Duration::from_secs(1));
             continue;
         }
@@ -298,8 +409,13 @@ pub fn app_detection_loop(
         if last_package != final_pkg || pid_changed || force_refresh {
             if !final_pkg.is_empty() {
                 set_current_package(&final_pkg, final_pid);
-                // 使用已获取的 config_snapshot，不再重复加锁
                 let new_mode = determine_mode(&config_snapshot, &final_pkg);
+
+                // Aegis: drive the FAS gate. Frame probes load ONLY for apps
+                // that actually resolve to FAS (explicit per-app FAS still works
+                // when the global FAS switch is off); otherwise the FPS worker
+                // sleeps with zero kernel probes attached (idle power fix).
+                FAS_ACTIVE.store(new_mode == "fas", Ordering::Relaxed);
 
                 // force_refresh（配置重载/亮屏恢复）只驱动外层重新计算模式；
                 // 模式未变时不重发 ModeChange，避免 "balance -> balance" 冗余事件。

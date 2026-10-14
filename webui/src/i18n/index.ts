@@ -8,10 +8,11 @@ const messages = {
   zh
 };
 
+// Aegis: 固定中文界面（个人使用，不提供语言切换）
 const i18n = createI18n({
   legacy: false,
-  locale: localStorage.getItem('app_lang') || 'zh',
-  fallbackLocale: 'en',
+  locale: 'zh',
+  fallbackLocale: 'zh',
   messages,
 });
 

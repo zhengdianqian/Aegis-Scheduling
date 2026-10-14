@@ -57,10 +57,10 @@ pub fn get_module_root() -> PathBuf {
     let exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("/"));
     
     // 回溯两级目录:
-    // core/bin/yumi -> core/bin -> core -> yumi
+    // core/bin/Aegis -> core/bin -> core -> module root
     exe_path
         .parent().unwrap_or(&exe_path) // .../core/bin
         .parent().unwrap_or(&exe_path) // .../core
-        .parent().unwrap_or(&exe_path) // .../yumi (Root)
+        .parent().unwrap_or(&exe_path) // .../module root
         .to_path_buf()
 }

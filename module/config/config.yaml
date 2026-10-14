@@ -1,8 +1,8 @@
 # 元数据信息
 meta:
-  name: "default_config"
-  author: "yuki"
-  language: "en"
+  name: "aegis_config"
+  author: "Aegis"
+  language: "zh"
   loglevel: "INFO"
 
 # 主要功能开关
@@ -22,74 +22,101 @@ CpuIdle:
   current_governor: ""
 
 # --- 性能模式 ---
+# 8Gen2/领先版适配（三集群硬件频率边界）：
+#   小核 policy0: 307200 ~ 2016000 (16 档)
+#   中核 policy3: 499200 ~ 2803200 (19 档)
+#   超大核 policy7: 595200 ~ 3360000 (20 档)
+# perf 归一化: 0.0 = 各集群硬件最低频, 1.0 = 各集群最高频
+# 采样 tick = 100ms；静态沉底 ≈ 0.3~0.7s；触摸爆发当拍到位（≤100ms）
+# low_load_gain: 低负载目标压缩——【非交互态】负载低于升频阈值时目标按增益
+#   缩放，小说/短视频等 util 0.2~0.35 的持续静态场景落位低频档省电。
+#   1.0 = 跟随原始负载；0.45 ≈ 静态落 748~844MHz。
+# interact_hold_ticks: 交互驻留（1tick=100ms）。检测到负载突增（触摸/滑动）
+#   后进入交互态：跳过低载压缩与尖峰衰减、升频免确认且突增当拍一步到位、
+#   给满 headroom 帧级余量、窗口内禁止快速沉底；手势停止后经此时长才回到
+#   省电路径。治"静态→滑动起步丢帧"和"断续慢拖反复顿挫"。0=关闭。
+#   省电/均衡 8（0.8s），性能 10（1s），极速 15。
+# interact_fg_util: 交互态前台闸门——最忙前台 App 线程（UI/RenderThread）
+#   利用率超过此值、且簇负载超过 down_fast_threshold 时即进入交互态（不要求
+#   负载跳变，低速慢拖是平缓爬升），挡住 MIUI 后台同步等系统噪声误触。
+#   0=不校验。滑动时前台线程普遍 0.25+，静态/看视频时仅 0.03~0.15。
 
-# 省电模式
+# 省电模式：深度下探 + 保守升频（静态省电，触摸不丢帧）
 powersave:
   cpu_load_governor:
-    up_threshold: 0.85
-    down_threshold: 0.60
-    smoothing_up: 0.40
-    smoothing_down: 0.50
-    down_rate_limit_ticks: 2
-    up_rate_limit_ticks: 2
-    headroom_factor: 1.10
-    headroom_ramp: 0.15
-    perf_floor: 0.10
-    perf_ceil: 0.70
-    perf_init: 0.30
-    up_jump_threshold: 0.35
-    slow_up_scale: 0.02
-    slow_down_scale: 0.5
-    down_fast_threshold: 0.10
-    down_fast_mult: 2.5
-    spike_jump_threshold: 0.35
-    spike_decay: 0.30
-
-# 均衡模式
-balance:
-  cpu_load_governor:
-    up_threshold: 0.80
-    down_threshold: 0.50
-    smoothing_up: 0.60
-    smoothing_down: 0.30
+    up_threshold: 0.75
+    down_threshold: 0.45
+    smoothing_up: 0.50
+    smoothing_down: 0.45
     down_rate_limit_ticks: 3
     up_rate_limit_ticks: 2
-    headroom_factor: 1.25
+    headroom_factor: 1.15
     headroom_ramp: 0.15
-    perf_floor: 0.15
-    perf_ceil: 1.0
-    perf_init: 0.50
+    perf_floor: 0.0
+    perf_ceil: 0.75
+    perf_init: 0.25
     up_jump_threshold: 0.35
-    slow_up_scale: 0.02
-    slow_down_scale: 0.5
-    down_fast_threshold: 0.10
-    down_fast_mult: 2.5
+    slow_up_scale: 0.10
+    slow_down_scale: 0.40
+    down_fast_threshold: 0.30
+    down_fast_mult: 4.5
     spike_jump_threshold: 0.35
     spike_decay: 0.30
+    low_load_gain: 0.45
+    interact_hold_ticks: 8
+    interact_fg_util: 0.25
 
-# 性能模式
+# 均衡模式：静态贴底省电，触屏当拍回收防卡
+balance:
+  cpu_load_governor:
+    up_threshold: 0.70
+    down_threshold: 0.40
+    smoothing_up: 0.65
+    smoothing_down: 0.35
+    down_rate_limit_ticks: 2
+    up_rate_limit_ticks: 1
+    headroom_factor: 1.30
+    headroom_ramp: 0.15
+    perf_floor: 0.0
+    perf_ceil: 1.0
+    perf_init: 0.35
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.15
+    slow_down_scale: 0.40
+    down_fast_threshold: 0.30
+    down_fast_mult: 4.0
+    spike_jump_threshold: 0.30
+    spike_decay: 0.35
+    low_load_gain: 0.55
+    interact_hold_ticks: 8
+    interact_fg_util: 0.25
+
+# 性能模式：底更深但倾向驻留高位
 performance:
   cpu_load_governor:
-    up_threshold: 0.65
-    down_threshold: 0.40
-    smoothing_up: 0.80
+    up_threshold: 0.55
+    down_threshold: 0.35
+    smoothing_up: 0.85
     smoothing_down: 0.20
-    down_rate_limit_ticks: 5
+    down_rate_limit_ticks: 4
     up_rate_limit_ticks: 1
-    headroom_factor: 1.40
+    headroom_factor: 1.45
     headroom_ramp: 0.15
-    perf_floor: 0.35
+    perf_floor: 0.10
     perf_ceil: 1.0
-    perf_init: 0.60
+    perf_init: 0.55
     up_jump_threshold: 0.35
-    slow_up_scale: 0.02
-    slow_down_scale: 0.5
-    down_fast_threshold: 0.10
-    down_fast_mult: 2.5
+    slow_up_scale: 0.15
+    slow_down_scale: 0.35
+    down_fast_threshold: 0.15
+    down_fast_mult: 3.0
     spike_jump_threshold: 0.35
     spike_decay: 0.30
+    low_load_gain: 0.75
+    interact_hold_ticks: 10
+    interact_fg_util: 0.25
 
-# 极速模式
+# 极速模式：锁最高频，不参与下探
 fast:
   cpu_load_governor:
     up_threshold: 0.01
@@ -110,3 +137,6 @@ fast:
     down_fast_mult: 2.5
     spike_jump_threshold: 0.35
     spike_decay: 0.30
+    low_load_gain: 1.0
+    interact_hold_ticks: 15
+    interact_fg_util: 0.25

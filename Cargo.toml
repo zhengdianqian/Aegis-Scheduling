@@ -2,15 +2,21 @@
 members = ["xtask", "yumi-ebpf"]
 
 [package]
-name = "yumi"
+name = "aegis"
 version = "2.0.2"
 edition = "2024"
 authors = ["yuki <loyeturz@163.com>"]
 license = "GPL-3.0-or-later"
-description = "A powerful Android system daemon for monitoring and scheduling."
-repository = "https://github.com/imacte/YukiCtrl"
+description = "Aegis - Android CPU scheduling daemon (yumi core rebrand)."
+repository = "https://github.com/imacte/yumi"
 keywords = ["android", "scheduler", "monitor"]
 categories = ["command-line-utilities", "os::linux-apis"]
+
+# Aegis: the shipped daemon binary must be named "Aegis" to integrate with the
+# Aegis power matrix (freezer / charge / thermal module family).
+[[bin]]
+name = "Aegis"
+path = "src/main.rs"
 
 [dependencies]
 # --- 通用/核心 ---

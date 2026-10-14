@@ -24,3 +24,7 @@ yumi-*.zip
 *.bak
 output/
 *.log
+
+# WebUI deps/build
+webui/node_modules/
+webui/dist/

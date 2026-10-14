@@ -42,6 +42,7 @@ use std::{
     num::NonZeroU32,
     os::fd::AsRawFd,
     sync::mpsc::Sender,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -232,59 +233,119 @@ impl FpsManager {
 
 // This function owns the entire worker. Returning an error reaches the monitor
 // supervisor; there are no detached PID watchers or permanently pending tasks.
+//
+// Aegis power fix: the eBPF object (program + per-CPU perf buffers) is loaded
+// LAZILY and only while a real FAS app is in foreground. In every other state
+// (idle desktop, ordinary apps, screen off) the worker owns NO probes and polls
+// nothing — eliminating the constant ~0.2 W idle cost reported when no game is
+// running. Probe load failure is retried while FAS remains requested instead
+// of killing the worker permanently.
 pub fn start_fps_loop(tx: Sender<DaemonEvent>) -> Result<()> {
-    let mut manager = FpsManager::new()?;
-    let mut poll = Poll::new()?;
-    manager
-        .transport
-        .register(poll.registry())
-        .context("register FPS event buffers")?;
-    let backend = match &manager.transport {
-        Transport::Ring(_) => "RingBuf",
-        _ => "PerfEventArray",
-    };
-    info!("[FPS Monitor] {backend} initialized; waiting for target PID");
-    let mut events = Events::with_capacity(64);
-    let mut target_pid = 0;
+    struct Active {
+        manager: FpsManager,
+        poll: Poll,
+        events: Events,
+    }
+
+    let mut slot: Option<Active> = None;
+    let mut target_pid: u32 = 0;
     let mut next_attach = Instant::now();
-    let mut next_cpu_refresh = Instant::now() + Duration::from_secs(1);
+    let mut next_cpu_refresh = Instant::now();
+    let mut load_failures: u32 = 0;
+
     loop {
+        // ── Sleep state: zero kernel probes, zero perf buffers, 1 s recheck ──
+        if !app_detect::is_fas_active() {
+            if slot.take().is_some() {
+                info!("[FPS Monitor] FAS released; detaching uprobe and closing eBPF buffers");
+                // Dropping the Ebpf object closes all links/buffers; also tell
+                // the scheduler to release any residual FAS frequency locks.
+                let _ = tx.send(DaemonEvent::FpsProbeUnavailable);
+            }
+            target_pid = 0;
+            load_failures = 0;
+            thread::sleep(Duration::from_millis(1000));
+            continue;
+        }
+
+        // ── Lazy load: pay probe cost only when FAS is genuinely requested ──
+        if slot.is_none() {
+            match FpsManager::new() {
+                Ok(mut manager) => {
+                    let poll = Poll::new()?;
+                    manager
+                        .transport
+                        .register(poll.registry())
+                        .context("register FPS event buffers")?;
+                    let backend = match &manager.transport {
+                        Transport::Ring(_) => "RingBuf",
+                        _ => "PerfEventArray",
+                    };
+                    info!("[FPS Monitor] {backend} initialized on demand; waiting for target PID");
+                    slot = Some(Active {
+                        manager,
+                        poll,
+                        events: Events::with_capacity(64),
+                    });
+                    next_attach = Instant::now();
+                    next_cpu_refresh = Instant::now() + Duration::from_secs(1);
+                    load_failures = 0;
+                }
+                Err(error) => {
+                    load_failures += 1;
+                    if load_failures == 1 || load_failures % 12 == 0 {
+                        warn!("[FPS Monitor] probe load failed: {error:#}; FAS idle, retry in 5s");
+                    }
+                    let _ = tx.send(DaemonEvent::FpsProbeUnavailable);
+                    thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            }
+        }
+
+        let active = slot.as_mut().unwrap();
         let now = Instant::now();
         let pid = app_detect::get_current_pid().max(0) as u32;
         if pid != target_pid {
             target_pid = pid;
             next_attach = now;
         }
-        if manager.current_pid != target_pid && now >= next_attach {
+        if active.manager.current_pid != target_pid && now >= next_attach {
             if tx.send(DaemonEvent::FpsProbeUnavailable).is_err() {
                 return Ok(());
             }
-            if let Err(error) = manager.switch_pid(target_pid) {
+            if let Err(error) = active.manager.switch_pid(target_pid) {
                 warn!("[FPS Monitor] {error:#}; retrying in 2 seconds");
             }
             next_attach = now + Duration::from_secs(2);
         }
         if now >= next_cpu_refresh {
-            manager.transport.refresh_cpus(poll.registry())?;
+            active
+                .manager
+                .transport
+                .refresh_cpus(&active.poll.registry())?;
             next_cpu_refresh = now + Duration::from_secs(1);
         }
-        if let Err(error) = poll.poll(&mut events, Some(Duration::from_millis(100))) {
+        if let Err(error) = active
+            .poll
+            .poll(&mut active.events, Some(Duration::from_millis(100)))
+        {
             if error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(error).context("poll FPS event buffers");
         }
-        let (frames, lost) = manager.transport.drain();
+        let (frames, lost) = active.manager.transport.drain();
         let ktime = get_ktime_ns();
         if lost > 0 {
             warn!("[FPS Monitor] Lost {lost} perf events; resetting frame baseline");
-            manager.clock.reset(ktime);
+            active.manager.clock.reset(ktime);
         }
         for frame in frames {
-            if manager.current_pid == 0 || frame.pid != manager.current_pid {
+            if active.manager.current_pid == 0 || frame.pid != active.manager.current_pid {
                 continue;
             }
-            if let Some(frame_delta_ns) = manager.clock.ingest(frame.ktime_ns, ktime) {
+            if let Some(frame_delta_ns) = active.manager.clock.ingest(frame.ktime_ns, ktime) {
                 let sampled_at = Instant::now() - Duration::from_nanos(ktime - frame.ktime_ns);
                 if tx
                     .send(DaemonEvent::FrameUpdate {

@@ -196,7 +196,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             // message, so either an idle channel or a busy one can release control.
             let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
-                    let message = match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    let message = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok(message) => Some(message),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -245,6 +245,16 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                 }
                                 *mode_clone.lock().unwrap() = mode.clone();
                                 let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+                                // Aegis: 模式落盘后立即刷新 module.prop 描述，
+                                // 让 KSU 管理器里的调度状态随切换实时更新
+                                //（此前仅开机由 service.sh 刷新一次，切换后描述滞留旧值）
+                                {
+                                    let moddir = crate::common::get_module_root();
+                                    let tool = moddir.join("update_prop");
+                                    let _ = std::process::Command::new(&tool)
+                                        .arg(&moddir)
+                                        .spawn();
+                                }
                                 game = if mode == "fas" { Some((pid, package_name, temperature)) } else { None };
                                 fas_controller.set_temperature(temperature);
                             }
@@ -255,7 +265,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                 if valid && cpu_health.observe(sampled_at, now) {
                                     fas_controller.update_cpu_util(foreground_max_util);
                                     fas_controller.update_core_utils(&core_utils);
-                                    if cpu_governor.is_active() { cpu_governor.on_load_update(&core_utils); }
+                                    if cpu_governor.is_active() { cpu_governor.on_load_update(&core_utils, foreground_max_util); }
                                 }
                             }
                             DaemonEvent::FrameUpdate { frame_delta_ns, pid, sampled_at } => {

@@ -1,8 +1,7 @@
 #!/system/bin/sh
 #
 # ########################################################################################
-#   yumi 模块安装脚本
-#   作者: yuki
+#   Aegis 模块安装脚本
 # ########################################################################################
 
 # --- 模块路径和工具 ---
@@ -24,11 +23,11 @@ if [ -z "$CURRENT_LOCALE" ]; then
 fi
 
 LANG_CODE="en"
-MSG_WELCOME="Welcome to Yumi Scheduler!"
+MSG_WELCOME="Welcome to Aegis Scheduler!"
 
 if echo "$CURRENT_LOCALE" | $BUSYBOX grep -qi "zh"; then
   LANG_CODE="zh"
-  MSG_WELCOME="欢迎使用 Yumi 调度！"
+  MSG_WELCOME="欢迎使用 Aegis 调度！"
 fi
 
 # --- 仅输出欢迎信息 ---
