@@ -217,7 +217,7 @@ v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配�
 
 ### 5.2 v6 → v7 频率对比（均为省电档，酷安/红果由规则自动匹配 powersave）
 
-**MT 管理器（bin.mt.plus，轻量文件列表）**：
+**MT 管理器（bin.mt.plus，轻量文件列表，rules.yaml 已显式钉到 powersave 档）**：
 
 | 指标 | v6 交互态 | v7 |
 |---|---|---|
