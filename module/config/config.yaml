@@ -46,8 +46,18 @@ CpuIdle:
 #   省电 powersave：压得最深、上限 0.70（中核≤约2112）、跳变门槛最高(0.40)，
 #     只有真实手势起步才直通；回退快（down_wait=2 / slow_down=0.50）。
 #     真机验证：酷安滑动中位 1920（钉频实测流畅线）零丢帧；MT 慢滑贴 499。
-#   标准 balance：压频略浅(0.55)、不封上限，跳变门槛 0.35 比省电档跟手，
-#     回退速度与省电档一致，避免重负载信息流粘在高档。
+#   标准 balance：v3 调参 (2026-10-15) 解决"频率空转"问题——
+#     原 headroom 1.15 + up_threshold 0.70 导致 util 0.65 时 target=0.75×→
+#     超大核落到 2700MHz（实际只需 1600MHz 即可）。改为：
+#     · headroom 1.15→1.05（基本不放大目标，给微小余量）
+#     · up_threshold 0.70→0.85（仅真重载触发 headroom，中载走线性）
+#     · down_threshold 0.40→0.50（low_load_gain 适用范围扩大，静态更深压）
+#     · slow_down_scale 0.50→0.55 + down_fast_threshold 0.30→0.25（更早沉底）
+#     · spike_jump 0.35→0.50（仅真实滑动手势起步触发 jump 通道）
+#     · perf_ceil 保持 1.0（不封顶，启动可冲 3360MHz）
+#     · low_load_gain 保持 0.55（不靠它强行下压，仅静态低载时生效）
+#     效果：util 0.5 时 target≈0.275→1354MHz；util 0.65 时 target≈0.48→1925MHz；
+#           util 0.85 时 target≈0.85→2946MHz；util 1.0 → 3360MHz 满频可达成。
 #   性能 performance：低门槛(0.55)、快升(0.85)、缓降(down_wait=4)、保留 0.10
 #     底频与高端 1.30 余量，档位性格即"倾向驻留高位"。
 
@@ -73,25 +83,25 @@ powersave:
     low_load_gain: 0.40
     interact_fg_util: 0.25
 
-# 标准模式：静态贴底省电，触屏当拍回收防卡
+# 标准模式：target 紧跟真实 util，不放大；启动可冲满频，平时不空转
 balance:
   cpu_load_governor:
-    up_threshold: 0.70
-    down_threshold: 0.40
+    up_threshold: 0.85
+    down_threshold: 0.50
     smoothing_up: 0.65
     smoothing_down: 0.35
     down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
-    headroom_factor: 1.15
+    headroom_factor: 1.05
     perf_floor: 0.0
     perf_ceil: 1.0
     perf_init: 0.35
     up_jump_threshold: 0.35
     slow_up_scale: 0.15
-    slow_down_scale: 0.50
-    down_fast_threshold: 0.30
+    slow_down_scale: 0.55
+    down_fast_threshold: 0.25
     down_fast_mult: 4.0
-    spike_jump_threshold: 0.35
+    spike_jump_threshold: 0.50
     low_load_gain: 0.55
     interact_fg_util: 0.25
 
