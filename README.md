@@ -71,7 +71,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 │  └─ common.rs             模块根目录注释（路径回溯按 Aegis 命名）
 ├─ yumi-ebpf/               eBPF 探针程序（未改）
 ├─ module/                  刷包完整内容（与 prebuilt zip 逐一一致，含二进制）
-│  ├─ config/config.yaml    ★ 四模式 CLG 定值（无注释，§4.1）
+│  ├─ config/config.yaml    ★ 四模式 CLG 定值（仅大块作用注释，§4.1）
 │  ├─ rules.yaml            ★ FAS 定值 + FAS 开关语义（§4.2）
 │  ├─ core/bin/Aegis        ★ v7 守护二进制（arm64）
 │  ├─ webroot/index.html    ★ WebUI 构建产物（充电表单修复版）
@@ -83,7 +83,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 ├─ xtask/                   打包任务（产物名 yumi→Aegis、aegis-*.zip）
 ├─ prebuilt/                ★ 真机验证过的可刷整包（含充电阈值/温控全家桶）
 ├─ tools/
-│  ├─ Aegis_一键适配.sh      ★ 换新设备一键完成：探测硬件/算权重/生成无注释配置/部署/重启
+│  ├─ Aegis_一键适配.sh      ★ 换新设备一键完成：探测硬件/算权重/生成配置/部署/重启
 │  └─ aegis_cpu_probe.sh    早期手工硬件探测脚本（一键适配的底层逻辑来源）
 └─ docs/
    ├─ Aegis调参说明.txt      ★ 完整参数调参手册（v7 版，每个参数的影响）
@@ -156,7 +156,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 
 ## 4. 8Gen2 定制参数一览
 
-### 4.1 CLG 四模式（`module/config/config.yaml`，v7 内核 + v3 压空转定值，文件无注释）
+### 4.1 CLG 四模式（`module/config/config.yaml`，v7 内核 + v3 压空转定值）
 
 | 参数 | powersave | balance | performance | fast |
 |---|---|---|---|---|
@@ -176,7 +176,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 
 v3 理论复核（2026-10-15 晚，未再真机实测）：raw 0.20 空转时省电档 target≈0.08（中核 683MHz）、0.42 播放 ≈0.17（~886MHz 后随拍间回落沉底）、0.70 中载 ≈0.51（~1668MHz，不再被旧 headroom 1.15 抬到 2GHz 空转）。唯一观察点：省电/标准档 spike_jump 收到 0.50 后，重图信息流"慢拖起步"理论上有 2~3 拍（200~300ms）追赶期，若真机觉得起步肉，只把该值放回 0.45，其余不动。
 
-v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配置与代码中删除。配置文件内不放任何注释（避免跨设备编码乱码），参数含义以本文档与 `docs/Aegis调参说明.txt` 为准。
+v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配置与代码中删除。两个 YAML 只保留每个大块上方一行作用注释（无行内解释、无历史调参记录，避免换设备时编码乱码与陈旧误导），完整参数含义以本文档与 `docs/Aegis调参说明.txt` 为准。
 
 ### 4.2 FAS 游戏档（`module/rules.yaml`，要点）
 
@@ -217,7 +217,7 @@ v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配�
 
 ### 5.2 v6 → v7 频率对比（均为省电档，酷安/红果由规则自动匹配 powersave）
 
-**MT 管理器（bin.mt.plus，轻量文件列表，rules.yaml 已显式钉到 powersave 档）**：
+**MT 管理器（bin.mt.plus，轻量文件列表）**：
 
 | 指标 | v6 交互态 | v7 |
 |---|---|---|
@@ -306,7 +306,7 @@ prebuilt 里的整包 = 调度模块 + 充电阈值/温控脚本与二进制（c
 
 ## 9. 换设备移植流程
 
-**一键方式（推荐）**：新设备刷入 Aegis 模块后，把 [`tools/Aegis_一键适配.sh`](tools/Aegis_一键适配.sh)（桌面也有一份）用 MT 管理器以 Root 执行。脚本自动：探测分簇/policy/频率/capacity → 按内核同公式算权重 → 直接生成**无注释** rules.yaml/config.yaml（字段与本仓库定值一致）→ 备份旧配置（.bak.时间戳）→ 覆盖模块目录 → 重启守护 → 输出 `/sdcard/Aegis_适配建议.txt`。CLG 的阈值/增益类参数跨 SoC 通用，脚本直接沿用，无需手工换算。
+**一键方式（推荐）**：新设备刷入 Aegis 模块后，把 [`tools/Aegis_一键适配.sh`](tools/Aegis_一键适配.sh)（桌面也有一份）用 MT 管理器以 Root 执行。脚本自动：探测分簇/policy/频率/capacity → 按内核同公式算权重 → 直接生成 rules.yaml/config.yaml（仅大块作用注释，字段与本仓库定值逐行一致）→ 备份旧配置（.bak.时间戳）→ 覆盖模块目录 → 重启守护 → 输出 `/sdcard/Aegis_适配建议.txt`。CLG 的阈值/增益类参数跨 SoC 通用，脚本直接沿用，无需手工换算。
 
 手工流程（脚本逻辑来源）：
 

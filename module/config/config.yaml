@@ -1,22 +1,27 @@
+# 元信息
 meta:
   name: "aegis_config"
   author: "Aegis"
   language: "zh"
   loglevel: "INFO"
 
+# 功能开关
 function:
   CpuIdleScalingGovernor: false
   IOOptimization: true
 
+# IO 调度设置
 IO_Settings:
   Scheduler: "none"
   read_ahead_kb: "128"
   nomerges: "2"
   iostats: "0"
 
+# CPU 空闲设置
 CpuIdle:
   current_governor: ""
 
+# 省电模式：静态深度压频，上限 0.70，手势走 jump 通道起步
 powersave:
   cpu_load_governor:
     up_threshold: 0.85
@@ -38,6 +43,7 @@ powersave:
     low_load_gain: 0.40
     interact_fg_util: 0.25
 
+# 标准模式：目标紧跟真实负载，不封最高频
 balance:
   cpu_load_governor:
     up_threshold: 0.85
@@ -59,6 +65,7 @@ balance:
     low_load_gain: 0.55
     interact_fg_util: 0.25
 
+# 性能模式：低门槛快升缓降，保留 0.10 底频
 performance:
   cpu_load_governor:
     up_threshold: 0.75
@@ -80,6 +87,7 @@ performance:
     low_load_gain: 0.75
     interact_fg_util: 0.25
 
+# 极速模式：锁满频，不参与调频
 fast:
   cpu_load_governor:
     up_threshold: 0.01

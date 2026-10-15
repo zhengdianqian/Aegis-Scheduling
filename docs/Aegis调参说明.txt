@@ -4,16 +4,17 @@
   适用：config/config.yaml（日常 CLG 调度）+ rules.yaml（FAS 游戏调度）
   生效方式：rules.yaml 保存后约 3 秒热加载；config.yaml 不热加载，
             改完必须重启守护（killall -9 Aegis 后重新拉起）或重启手机。
-  注：config.yaml / rules.yaml 部署文件内【不含任何注释】（避免换设备
-      时编码乱码），所有参数含义以本手册为准。
+  注：config.yaml / rules.yaml 内只在每个大块上方保留一行作用注释，
+      没有行内解释与历史记录（避免换设备时编码乱码），完整含义看本手册。
 ════════════════════════════════════════════════════════════════════
 
 【零、换设备：一键适配】
 
   新手机刷入 Aegis 模块后，把桌面（或仓库 tools/）的
   Aegis_一键适配.sh 用 MT 管理器以 Root 执行即可，全自动：
-    探测分簇/频率/capacity → 按内核公式算权重 → 生成无注释
-    rules.yaml/config.yaml → 备份旧配置(.bak.时间戳) → 覆盖 →
+    探测分簇/频率/capacity → 按内核公式算权重 → 生成
+    rules.yaml/config.yaml（仅大块作用注释）→ 备份旧配置(.bak.时间戳)
+    → 覆盖 →
     重启守护 → 报告写到 /sdcard/Aegis_适配建议.txt
   本手册【一】是该脚本背后的手工流程，一般不用再走。
 

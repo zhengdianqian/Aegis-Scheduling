@@ -1,143 +1,112 @@
-# ────────────────────────────────────────────────
-# Aegis 调度规则  ·  高通 8Gen2 / 8Gen2 领先版 (SM8550 AB/AC) 定制
-# ────────────────────────────────────────────────
-# 实测硬件（MIX Fold 3 babylon · 8Gen2 领先版）：
-#   policy0  小核 cpu0-2  3×A510   capacity 266   307200 ~ 2016000 kHz
-#   policy3  中核 cpu3-6  2×A715+2×A710  cap 811  499200 ~ 2803200 kHz
-#   policy7  超大核 cpu7  1×X3      capacity 1024  595200 ~ 3360000 kHz
-
 # 调度总开关
 aegis_scheduler: true
-
-# FAS 全局开关（只管"全局 FAS"，不影响单独指定 FAS 的应用）：
-#   false = 默认。普通应用不走 FAS、帧探针/eBPF 全程休眠（零空转功耗）；
-#           但下方 app_modes 里单独指定为 fas 的游戏，识别到前台仍会唤醒 FAS。
-#   true  = 全局模式为 fas 时所有应用都可进入 FAS。
 fas_enabled: false
-
 dynamic_enabled: true
-# 日常全局模式：powersave 省电 / balance 均衡 / performance 性能 / fast 极速 / fas
 global_mode: "balance"
 
+# 应用单独模式（游戏/相机走 fas）
 app_modes:
   com.miHoYo.GenshinImpact: "fas"
   com.tencent.tmgp.sgame: "fas"
   com.tencent.tmgp.speedmobile: "fas"
   com.tencent.lolm: "fas"
-  # 小米系统相机（com.android.camera）：预览/录像帧率敏感，进 FAS 帧感知调度
   com.android.camera: "fas"
-  # ── 子场景单独标记（避免被错误放大为全局负载信号）──────────
-  # MT管理器：首页滑动频率正常，但"打开 TXT 再滑动"会出现频率空高
-  # （文本渲染/读盘瞬时高 util）。钉到省电档：上限 0.70 + spike_jump 0.40
-  # 最严，只认真实手势起步；其突发被 powersave 天花板压住，不污染全局。
-  bin.mt.plus: "powersave"
 
+# 不参与前台识别的应用
 ignored_apps:
   - com.android.systemui
 
+# FAS 帧感知调度（仅对 fas 应用生效）
 fas_rules:
-  # ── 全局默认档位 (未在 per_app_profiles 中配置的游戏使用) ──
+  # 全局帧率档位与余量
   fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0]
   fps_margin: 3.0
 
-  # ── 每游戏 FAS 配置 ──
+  # 单游戏档位
   per_app_profiles:
     "com.miHoYo.GenshinImpact":
       target_fps: [30, 60]
       fps_margin: 4.0
-
     "com.tencent.tmgp.pubgmhd":
       target_fps: [60, 90, 120]
       fps_margin: 3.0
-
     "com.tencent.tmgp.speedmobile":
       target_fps: [30, 60, 120, 144]
       fps_margin: 3.0
-
     "com.tencent.tmgp.sgame":
       target_fps: [60, 90, 120]
       fps_margin: 3.0
-
     "com.hypergryph.arknights":
       target_fps: [30, 60]
-
     "com.miHoYo.hkrpg":
       target_fps: [30, 60]
-
     "com.kurogame.mingchao":
       target_fps: [24, 30, 45, 60]
-
     "com.tencent.lolm":
       target_fps: [60, 90, 120, 144]
       fps_margin: 3.0
 
-  # ── PID 控制器核心系数 ──
+  # PID 控制系数
   pid:
     kp: 0.05
     ki: 0.01
     kd: 0.006
 
-  # ── 集群算力感知（8Gen2 / 领先版 三簇实测定值，AB/AC 通用）──
-  # 权重来源：cpu_capacity 266 / 811 / 1024，按内核公式 1+sqrt(cap/266-1) 换算
-  #   小核 1.00  中核 2.43  超大核 2.69
-  # 含义：低 perf 时压制大簇频率省电、高 perf 时保证大簇拉满；
-  #       值越大低载越省电、重负载响应略缓。
+  # 集群算力权重（按 policy 编号升序）
   auto_capacity_weight: false
   cluster_profiles:
-    - capacity_weight: 1.00   # policy0 小核 A510×3  (cap 266)
-    - capacity_weight: 2.43   # policy3 中核 A715/A710×4 (cap 811)
-    - capacity_weight: 2.69   # policy7 超大核 X3×1 (cap 1024)
+    - capacity_weight: 1.00
+    - capacity_weight: 2.43
+    - capacity_weight: 2.69
 
-  # ── 归一化性能 (Perf) 范围 · 按三簇频率表换算 ──
-  # perf_floor 0.30 → 小核≈820 / 中核≈1190 / 超大核≈1425 MHz（游戏起步地板，防进场卡顿）
-  # perf_init  0.50 → 小核≈1162 / 中核≈1651 / 超大核≈1978 MHz
+  # perf 范围（0=各簇最低频，1=各簇最高频）
   perf_floor: 0.30
   perf_ceil: 1.0
   perf_init: 0.50
   perf_cold_boot: 0.85
   freq_hysteresis: 0.015
 
-  # ── 重帧 / 硬加载 ──
+  # 重帧 / 硬加载
   heavy_frame_threshold_ms: 150.0
   loading_cumulative_ms: 2500.0
   loading_normal_tolerance: 3
   loading_perf_floor: 0.60
   loading_perf_ceiling: 0.70
 
-  # ── 加载后保护 ──
+  # 加载后保护
   post_loading_ignore_frames: 5
   post_loading_perf: 0.65
   post_loading_downgrade_guard: 90
 
-  # ── 齿轮切换与阻尼 ──
+  # 齿轮切换与阻尼
   upgrade_confirm_frames: 60
   downgrade_confirm_frames: 90
   upgrade_cooldown_after_downgrade: 90
   gear_dampen_frames: 60
 
-  # ── 降档紧急提频 (Boost) ──
+  # 降档紧急提频
   downgrade_boost_perf_inc: 0.18
   downgrade_boost_duration: 45
 
-  # ── 连续稳态快速衰减 (省电核心) ──
+  # 稳态快速衰减
   fast_decay_frame_threshold: 75
   fast_decay_perf_threshold: 0.70
   fast_decay_max_step: 0.022
   fast_decay_min_step: 0.004
 
-  # ── Jank 卡顿保护冷却 ──
+  # Jank 卡顿保护冷却
   jank_cooldown_frames: 15
 
-  # ── PID 输出限幅 (防过冲) ──
+  # PID 输出限幅
   max_inc_damped: 0.045
   max_inc_normal: 0.075
   damped_perf_cap: 0.92
 
-  # ── 应用切换 / 息屏检测 ──
+  # 应用切换 / 息屏
   app_switch_gap_ms: 3000.0
   app_switch_resume_perf: 0.60
 
-  # ── 其他底层机制 ──
+  # 其他底层机制
   freq_force_reapply_interval: 30
   fixed_max_frame_ms: 500.0
   cold_boot_ms: 3500

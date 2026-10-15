@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Aegis 一键适配
 # 在已安装 Aegis 模块的 ROOT 设备上用 MT 管理器直接执行：
-#   探测本机硬件 -> 直接生成【无注释】rules.yaml / config.yaml
+#   探测本机硬件 -> 生成 rules.yaml / config.yaml（仅大块作用注释）
 #   -> 备份旧配置 -> 覆盖到模块目录 -> 重启守护 -> 输出适配建议 TXT
 # 兼容 1/2/3/4 簇设备，纯 POSIX sh + awk，无外部依赖。
 
@@ -60,56 +60,63 @@ MINCAP=$(awk -F'|' 'NR==1{m=$5} {if($5<m && $5>0)m=$5} END{print m+0}' "$DATAF")
 [ "$MINCAP" -le 0 ] && MINCAP=300
 sort -t'|' -k5,5n "$DATAF" -o "$DATAF.sorted"
 
-# ── 2. 生成 rules.yaml（无注释，权重按本机 capacity 计算）────────────
+# ── 2. 生成 rules.yaml（权重按本机 capacity 计算）───────────────────
 {
+echo "# 调度总开关"
 echo "aegis_scheduler: true"
 echo "fas_enabled: false"
 echo "dynamic_enabled: true"
-echo "global_mode: \"balance\""
+echo 'global_mode: "balance"'
 echo
+echo "# 应用单独模式（游戏/相机走 fas）"
 echo "app_modes:"
-echo "  com.miHoYo.GenshinImpact: \"fas\""
-echo "  com.tencent.tmgp.sgame: \"fas\""
-echo "  com.tencent.tmgp.speedmobile: \"fas\""
-echo "  com.tencent.lolm: \"fas\""
-echo "  com.android.camera: \"fas\""
-echo "  bin.mt.plus: \"powersave\""
+echo '  com.miHoYo.GenshinImpact: "fas"'
+echo '  com.tencent.tmgp.sgame: "fas"'
+echo '  com.tencent.tmgp.speedmobile: "fas"'
+echo '  com.tencent.lolm: "fas"'
+echo '  com.android.camera: "fas"'
 echo
+echo "# 不参与前台识别的应用"
 echo "ignored_apps:"
 echo "  - com.android.systemui"
 echo
+echo "# FAS 帧感知调度（仅对 fas 应用生效）"
 echo "fas_rules:"
+echo "  # 全局帧率档位与余量"
 echo "  fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0]"
 echo "  fps_margin: 3.0"
 echo
+echo "  # 单游戏档位"
 echo "  per_app_profiles:"
-echo "    \"com.miHoYo.GenshinImpact\":"
+echo '    "com.miHoYo.GenshinImpact":'
 echo "      target_fps: [30, 60]"
 echo "      fps_margin: 4.0"
-echo "    \"com.tencent.tmgp.pubgmhd\":"
+echo '    "com.tencent.tmgp.pubgmhd":'
 echo "      target_fps: [60, 90, 120]"
 echo "      fps_margin: 3.0"
-echo "    \"com.tencent.tmgp.speedmobile\":"
+echo '    "com.tencent.tmgp.speedmobile":'
 echo "      target_fps: [30, 60, 120, 144]"
 echo "      fps_margin: 3.0"
-echo "    \"com.tencent.tmgp.sgame\":"
+echo '    "com.tencent.tmgp.sgame":'
 echo "      target_fps: [60, 90, 120]"
 echo "      fps_margin: 3.0"
-echo "    \"com.hypergryph.arknights\":"
+echo '    "com.hypergryph.arknights":'
 echo "      target_fps: [30, 60]"
-echo "    \"com.miHoYo.hkrpg\":"
+echo '    "com.miHoYo.hkrpg":'
 echo "      target_fps: [30, 60]"
-echo "    \"com.kurogame.mingchao\":"
+echo '    "com.kurogame.mingchao":'
 echo "      target_fps: [24, 30, 45, 60]"
-echo "    \"com.tencent.lolm\":"
+echo '    "com.tencent.lolm":'
 echo "      target_fps: [60, 90, 120, 144]"
 echo "      fps_margin: 3.0"
 echo
+echo "  # PID 控制系数"
 echo "  pid:"
 echo "    kp: 0.05"
 echo "    ki: 0.01"
 echo "    kd: 0.006"
 echo
+echo "  # 集群算力权重（按 policy 编号升序）"
 echo "  auto_capacity_weight: false"
 echo "  cluster_profiles:"
 awk -F'|' -v mc="$MINCAP" '{
@@ -117,70 +124,85 @@ awk -F'|' -v mc="$MINCAP" '{
     printf "    - capacity_weight: %.2f\n", w;
 }' "$DATAF.sorted"
 echo
+echo "  # perf 范围（0=各簇最低频，1=各簇最高频）"
 echo "  perf_floor: 0.30"
 echo "  perf_ceil: 1.0"
 echo "  perf_init: 0.50"
 echo "  perf_cold_boot: 0.85"
 echo "  freq_hysteresis: 0.015"
 echo
+echo "  # 重帧 / 硬加载"
 echo "  heavy_frame_threshold_ms: 150.0"
 echo "  loading_cumulative_ms: 2500.0"
 echo "  loading_normal_tolerance: 3"
 echo "  loading_perf_floor: 0.60"
 echo "  loading_perf_ceiling: 0.70"
 echo
+echo "  # 加载后保护"
 echo "  post_loading_ignore_frames: 5"
 echo "  post_loading_perf: 0.65"
 echo "  post_loading_downgrade_guard: 90"
 echo
+echo "  # 齿轮切换与阻尼"
 echo "  upgrade_confirm_frames: 60"
 echo "  downgrade_confirm_frames: 90"
 echo "  upgrade_cooldown_after_downgrade: 90"
 echo "  gear_dampen_frames: 60"
 echo
+echo "  # 降档紧急提频"
 echo "  downgrade_boost_perf_inc: 0.18"
 echo "  downgrade_boost_duration: 45"
 echo
+echo "  # 稳态快速衰减"
 echo "  fast_decay_frame_threshold: 75"
 echo "  fast_decay_perf_threshold: 0.70"
 echo "  fast_decay_max_step: 0.022"
 echo "  fast_decay_min_step: 0.004"
 echo
+echo "  # Jank 卡顿保护冷却"
 echo "  jank_cooldown_frames: 15"
 echo
+echo "  # PID 输出限幅"
 echo "  max_inc_damped: 0.045"
 echo "  max_inc_normal: 0.075"
 echo "  damped_perf_cap: 0.92"
 echo
+echo "  # 应用切换 / 息屏"
 echo "  app_switch_gap_ms: 3000.0"
 echo "  app_switch_resume_perf: 0.60"
 echo
+echo "  # 其他底层机制"
 echo "  freq_force_reapply_interval: 30"
 echo "  fixed_max_frame_ms: 500.0"
 echo "  cold_boot_ms: 3500"
 } > "$RULES_NEW"
 
-# ── 3. 生成 config.yaml（无注释，四模式 v7 内核 / v3 调参）──────────
+# ── 3. 生成 config.yaml（v7 内核 / v3 调参，fast 锁满）─────────────
 {
+echo "# 元信息"
 echo "meta:"
-echo "  name: \"aegis_config\""
-echo "  author: \"Aegis\""
-echo "  language: \"zh\""
-echo "  loglevel: \"INFO\""
+echo '  name: "aegis_config"'
+echo '  author: "Aegis"'
+echo '  language: "zh"'
+echo '  loglevel: "INFO"'
 echo
+echo "# 功能开关"
 echo "function:"
 echo "  CpuIdleScalingGovernor: false"
 echo "  IOOptimization: true"
 echo
+echo "# IO 调度设置"
 echo "IO_Settings:"
-echo "  Scheduler: \"none\""
-echo "  read_ahead_kb: \"128\""
-echo "  nomerges: \"2\""
-echo "  iostats: \"0\""
+echo '  Scheduler: "none"'
+echo '  read_ahead_kb: "128"'
+echo '  nomerges: "2"'
+echo '  iostats: "0"'
 echo
+echo "# CPU 空闲设置"
 echo "CpuIdle:"
-echo "  current_governor: \"\""
+echo '  current_governor: ""'
 echo
+echo "# 省电模式：静态深度压频，上限 0.70，手势走 jump 通道起步"
 echo "powersave:"
 echo "  cpu_load_governor:"
 echo "    up_threshold: 0.85"
@@ -202,6 +224,7 @@ echo "    spike_jump_threshold: 0.50"
 echo "    low_load_gain: 0.40"
 echo "    interact_fg_util: 0.25"
 echo
+echo "# 标准模式：目标紧跟真实负载，不封最高频"
 echo "balance:"
 echo "  cpu_load_governor:"
 echo "    up_threshold: 0.85"
@@ -223,6 +246,7 @@ echo "    spike_jump_threshold: 0.50"
 echo "    low_load_gain: 0.55"
 echo "    interact_fg_util: 0.25"
 echo
+echo "# 性能模式：低门槛快升缓降，保留 0.10 底频"
 echo "performance:"
 echo "  cpu_load_governor:"
 echo "    up_threshold: 0.75"
@@ -244,6 +268,7 @@ echo "    spike_jump_threshold: 0.35"
 echo "    low_load_gain: 0.75"
 echo "    interact_fg_util: 0.25"
 echo
+echo "# 极速模式：锁满频，不参与调频"
 echo "fast:"
 echo "  cpu_load_governor:"
 echo "    up_threshold: 0.01"
@@ -266,13 +291,15 @@ echo "    low_load_gain: 1.0"
 echo "    interact_fg_util: 0.25"
 } > "$CONFIG_NEW"
 
-# ── 4. 生成文件校验（非空 + 必须无注释 + 关键字段齐全）──────────────
+# ── 4. 生成文件校验（非空 + 关键字段齐全，块头注释允许保留）────────
 for f in "$RULES_NEW" "$CONFIG_NEW"; do
     [ -s "$f" ] || { echo "错误：$f 生成失败"; exit 1; }
-    if grep -q '#' "$f"; then echo "错误：$f 含有注释，中止部署"; exit 1; fi
 done
 grep -q '^aegis_scheduler:' "$RULES_NEW" || { echo "错误：rules.yaml 字段缺失"; exit 1; }
-grep -q '^powersave:' "$CONFIG_NEW" || { echo "错误：config.yaml 字段缺失"; exit 1; }
+grep -q '^fas_rules:' "$RULES_NEW" || { echo "错误：rules.yaml 缺 fas_rules"; exit 1; }
+for m in powersave balance performance fast; do
+    grep -q "^$m:" "$CONFIG_NEW" || { echo "错误：config.yaml 缺 $m 模式"; exit 1; }
+done
 NW=$(grep -c 'capacity_weight' "$RULES_NEW")
 [ "$NW" = "$NCLUSTER" ] || { echo "错误：cluster_profiles 条数($NW) != 簇数($NCLUSTER)"; exit 1; }
 
@@ -294,7 +321,7 @@ sleep 2
 NEWPID=$(pidof Aegis)
 [ -n "$NEWPID" ] && DEPLOY_OK=1 || DEPLOY_OK=0
 
-# ── 6. 适配建议 TXT（报告可含说明，部署的 YAML 本身无注释）──────────
+# ── 6. 适配建议 TXT ─────────────────────────────────────────────────
 {
 echo "══════════════════════════════════════════════════════════════════"
 echo " Aegis 调度 · 本机适配建议  $(date '+%Y-%m-%d %H:%M:%S')"
@@ -318,11 +345,11 @@ for P in 0.30 0.50 0.70 0.85 1.00; do
     printf "\n"
 done
 echo
-echo "【三】已部署 rules.yaml（无注释，备份后缀 .bak.$TS）"
+echo "【三】已部署 rules.yaml（备份后缀 .bak.$TS）"
 echo "────────────────────────────────────────────────────────────────────"
 cat "$RULES_NEW"
 echo
-echo "【四】已部署 config.yaml（无注释，v7 内核 / 省电-标准-性能 v3 调参 / fast 锁满未动）"
+echo "【四】已部署 config.yaml（v7 内核 / 省电-标准-性能 v3 调参 / fast 锁满）"
 echo "────────────────────────────────────────────────────────────────────"
 cat "$CONFIG_NEW"
 echo
