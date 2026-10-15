@@ -109,6 +109,17 @@ set_perm "$MODPATH/core/bin/Aegis" 0 0 0755
 set_perm "$MODPATH/scripts/disable_boost.sh" 0 0 0755
 set_perm "$MODPATH/tools/aegis_adapt.sh" 0 0 0755
 
+# ── 管理器 APK：刷入时立即安装（部分安装环境 pm 不可用则由 service.sh 开机兜底）──
+APK_PATH="$MODPATH/app/AegisManager.apk"
+if [ -f "$APK_PATH" ]; then
+    set_perm "$APK_PATH" 0 0 0644
+    if pm install -r "$APK_PATH" >/dev/null 2>&1; then
+        ui_print "- Aegis调度 管理器已安装/更新"
+    else
+        ui_print "- 管理器将在重启后自动安装到桌面"
+    fi
+fi
+
 ui_print ""
 ui_print "  🛡️ Aegis"
 ui_print "  · eBPF 调度（FAS 零空转）· 充电阈值 · 温控"

@@ -53,6 +53,27 @@ done
     exec "$MODDIR/charge_guardd" "$MODDIR"
 ) > /dev/null 2>&1 &
 
+# ── 管理器 APK：保证刷完桌面有图标（未安装或包内 APK 更新时自动安装）──
+(
+    APK_PATH="$MODDIR/app/AegisManager.apk"
+    [ -f "$APK_PATH" ] || exit 0
+    MARK=/data/local/tmp/.aegis_mgr_apk.md5
+    NEW=$(md5sum "$APK_PATH" 2>/dev/null | { read h _; echo "$h"; })
+    OLD=$(cat "$MARK" 2>/dev/null)
+    NEED=1
+    if pm path com.aegis.manager >/dev/null 2>&1 && [ "$NEW" = "$OLD" ]; then
+        NEED=0
+    fi
+    if [ "$NEED" = "1" ]; then
+        i=0
+        until pm install -r "$APK_PATH" >/dev/null 2>&1 || [ $i -ge 10 ]; do
+            sleep 3
+            i=$((i + 1))
+        done
+        [ $i -lt 10 ] && echo "$NEW" > "$MARK"
+    fi
+) >/dev/null 2>&1 &
+
 # WebUI 模块描述（当前模式/温控档/充电状态）
 "$MODDIR/update_prop" "$MODDIR" 2>/dev/null
 exit 0
