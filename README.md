@@ -37,7 +37,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 
 | 真实负载 raw_util | gain | 含义 |
 |---|---|---|
-| ≤ `down_threshold` | `low_load_gain`（0.45~0.75） | 静态/轻载深度压频 |
+| ≤ `down_threshold` | `low_load_gain`（0.40~0.75） | 静态/轻载深度压频 |
 | ≥ `up_threshold` | `headroom_factor`（1.15~1.30） | 重载留帧余量 |
 | 两阈值之间 | 线性插值 | 平滑过渡 |
 
@@ -159,14 +159,14 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 | smoothing_up / down | 0.50 / 0.45 | 0.65 / 0.35 | 0.85 / 0.20 | 1.0 / 0.01 |
 | up / down rate(ticks) | 2 / 2 | 2 / 2 | 1 / 4 | 1 / 10 |
 | headroom_factor（增益高端） | 1.15 | 1.15 | 1.30 | 2.0 |
-| perf_floor / ceil / init | 0 / 0.75 / 0.25 | 0 / 1.0 / 0.35 | 0.10 / 1.0 / 0.55 | 1.0/1.0/1.0 |
-| **low_load_gain（增益低端）** | **0.45** | **0.55** | **0.75** | 1.0 |
+| perf_floor / ceil / init | 0 / 0.70 / 0.25 | 0 / 1.0 / 0.35 | 0.10 / 1.0 / 0.55 | 1.0/1.0/1.0 |
+| **low_load_gain（增益低端）** | **0.40** | **0.55** | **0.75** | 1.0 |
 | **spike_jump_threshold** | **0.40** | **0.35** | 0.35 | 0.35 |
 | interact_fg_util（jump 闸门） | 0.25 | 0.25 | 0.25 | 0.25 |
 | up_jump / slow_up / slow_down | 0.35/0.10/**0.50** | 0.35/0.15/**0.50** | 0.35/0.15/0.35 | — |
 | down_fast_thresh / mult | 0.30 / 4.5 | 0.30 / 4.0 | 0.15 / 3.0 | — |
 
-三档性格：省电档压得最深（gain 0.45 / ceil 0.75 / jump 门槛最高 0.40），只有真实手势起步才直通，回退快；标准档压频略浅、不封上限、jump 0.35 更跟手；性能档低门槛、快升、缓降（down_wait=4）并保留 0.10 底频，档位性格即"倾向驻留高位"。
+三档性格：省电档压得最深（gain 0.40 / ceil 0.70 / jump 门槛最高 0.40），只有真实手势起步才直通，回退快；标准档压频略浅、不封上限、jump 0.35 更跟手；性能档低门槛、快升、缓降（down_wait=4）并保留 0.10 底频，档位性格即"倾向驻留高位"。
 
 v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配置与代码中删除。
 
@@ -207,7 +207,7 @@ v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配�
 
 ### 5.2 v6 → v7 频率对比（均为省电档，酷安/红果由规则自动匹配 powersave）
 
-**MT 管理器（bin.mt.plus，轻量文件列表）**：
+**MT 管理器（bin.mt.plus，轻量文件列表，rules.yaml 已显式钉到 powersave 档）**：
 
 | 指标 | v6 交互态 | v7 |
 |---|---|---|
