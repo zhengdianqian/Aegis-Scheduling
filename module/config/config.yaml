@@ -35,55 +35,38 @@ CpuIdle:
 #     raw ≤ down_threshold → gain = low_load_gain   （静态/轻载深度压频）
 #     raw ≥ up_threshold   → gain = headroom_factor （重载留帧余量）
 #     两阈值之间线性插值，全程无阶跃。
-#   升频需连续 up_rate_limit_ticks 拍确认（滤后台毛刺）；唯一例外：
-#   前台 App 线程超 interact_fg_util 且单拍负载跳升 ≥ spike_jump_threshold
-#   时（真实触摸/滑动起步），当拍一步到目标——目标本身已被增益压过，
-#   轻 App 只会快速到正确的低档，不会过给。
-#   降频：raw < down_fast_threshold 立即快速沉底；滞回带内按 slow_down_scale
-#   放缓下降防锯齿。升降对称，无驻留状态。
 #
-# 三档性格（理论分工，参数沿同一组规则微调）：
-#   省电 powersave：压得最深、上限 0.70（中核≤约2112）、跳变门槛最高(0.40)，
-#     只有真实手势起步才直通；回退快（down_wait=2 / slow_down=0.50）。
-#     真机验证：酷安滑动中位 1920（钉频实测流畅线）零丢帧；MT 慢滑贴 499。
-#   标准 balance：v3 调参 (2026-10-15) 解决"频率空转"问题——
-#     原 headroom 1.15 + up_threshold 0.70 导致 util 0.65 时 target=0.75×→
-#     超大核落到 2700MHz（实际只需 1600MHz 即可）。改为：
-#     · headroom 1.15→1.05（基本不放大目标，给微小余量）
-#     · up_threshold 0.70→0.85（仅真重载触发 headroom，中载走线性）
-#     · down_threshold 0.40→0.50（low_load_gain 适用范围扩大，静态更深压）
-#     · slow_down_scale 0.50→0.55 + down_fast_threshold 0.30→0.25（更早沉底）
-#     · spike_jump 0.35→0.50（仅真实滑动手势起步触发 jump 通道）
-#     · perf_ceil 保持 1.0（不封顶，启动可冲 3360MHz）
-#     · low_load_gain 保持 0.55（不靠它强行下压，仅静态低载时生效）
-#     效果：util 0.5 时 target≈0.275→1354MHz；util 0.65 时 target≈0.48→1925MHz；
-#           util 0.85 时 target≈0.85→2946MHz；util 1.0 → 3360MHz 满频可达成。
-#   性能 performance：低门槛(0.55)、快升(0.85)、缓降(down_wait=4)、保留 0.10
-#     底频与高端 1.30 余量，档位性格即"倾向驻留高位"。
+# v3 调参原则（2026-10-15）：修复"频率空转"——原 headroom 1.15-1.30 +
+#   up_threshold 0.55-0.75 导致中载 target 被放大到 2700MHz（实际只需 1600MHz）。
+#   三模式统一改：headroom 降到 1.05-1.10 + up_threshold 提到 0.75-0.85
+#   + down_threshold 提到 0.45-0.55（拓宽线性带，让中频占比最大）。
+#   不靠 low_load_gain 强压（仅静态生效），不封顶 perf_ceil（除 powersave 0.70）。
 
-# 省电模式：深度下探 + 保守升频（静态省电，触摸不丢帧）
+# 省电模式：v3 拓宽中频带 + 保留 0.70 上限
+#   util 0.55→0.22→1203MHz；util 0.70→0.51→1998MHz；util 0.85→0.89→capped 2530MHz
 powersave:
   cpu_load_governor:
-    up_threshold: 0.75
-    down_threshold: 0.45
+    up_threshold: 0.85
+    down_threshold: 0.55
     smoothing_up: 0.50
     smoothing_down: 0.45
     down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
-    headroom_factor: 1.15
+    headroom_factor: 1.05
     perf_floor: 0.0
     perf_ceil: 0.70
     perf_init: 0.25
     up_jump_threshold: 0.35
     slow_up_scale: 0.10
-    slow_down_scale: 0.50
-    down_fast_threshold: 0.30
+    slow_down_scale: 0.55
+    down_fast_threshold: 0.25
     down_fast_mult: 4.5
-    spike_jump_threshold: 0.40
+    spike_jump_threshold: 0.50
     low_load_gain: 0.40
     interact_fg_util: 0.25
 
-# 标准模式：target 紧跟真实 util，不放大；启动可冲满频，平时不空转
+# 标准模式：v3 target 紧跟真实 util，不放大；启动可冲满频，平时不空转
+#   util 0.5→0.275→1354MHz；util 0.65→0.497→1966MHz；util 1.0→3360MHz
 balance:
   cpu_load_governor:
     up_threshold: 0.85
@@ -105,23 +88,24 @@ balance:
     low_load_gain: 0.55
     interact_fg_util: 0.25
 
-# 性能模式：更浅压频、更缓回落
+# 性能模式：v3 拓宽中频带，仍倾向高位但不再中载直冲 2700MHz
+#   util 0.45→0.34→1528MHz；util 0.60→0.555→2129MHz；util 0.75→0.825→2876MHz；util 1.0→3360MHz
 performance:
   cpu_load_governor:
-    up_threshold: 0.55
-    down_threshold: 0.35
+    up_threshold: 0.75
+    down_threshold: 0.45
     smoothing_up: 0.85
     smoothing_down: 0.20
     down_rate_limit_ticks: 4
     up_rate_limit_ticks: 1
-    headroom_factor: 1.30
+    headroom_factor: 1.10
     perf_floor: 0.10
     perf_ceil: 1.0
     perf_init: 0.55
     up_jump_threshold: 0.35
     slow_up_scale: 0.15
-    slow_down_scale: 0.35
-    down_fast_threshold: 0.15
+    slow_down_scale: 0.40
+    down_fast_threshold: 0.20
     down_fast_mult: 3.0
     spike_jump_threshold: 0.35
     low_load_gain: 0.75
