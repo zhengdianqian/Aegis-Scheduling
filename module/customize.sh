@@ -17,19 +17,8 @@ case "$ARCH" in
 esac
 ui_print "- 设备架构: $ARCH"
 
-NEWDIR="/data/adb/modules/aegis_power_matrix"
-LEGACY="/data/adb/modules/thread_affinity_opt_8gen2"
-OLD="$NEWDIR"
-if [ ! -d "$OLD" ] && [ -d "$LEGACY" ]; then
-    OLD="$LEGACY"
-    ui_print "- 检测到旧版模块，从它继承设置"
-fi
-# 旧版不能和新版同时运行
-[ -d "$LEGACY" ] && touch "$LEGACY/disable"
-# 若装过独立的 yumi / aegis 调度模块，停用以避免双守护抢频率
-for _m in yumi aegis; do
-    [ -d "/data/adb/modules/$_m" ] && touch "/data/adb/modules/$_m/disable"
-done
+# 仅处理本模块自身的升级（保留用户设置），不触碰任何其他模块
+OLD="/data/adb/modules/aegis_power_matrix"
 
 # ── 复制核心二进制（保留 bin/busybox；arm64-v8a 副本复制后清理）──
 for _bin in update_prop thermal_manager charge_guardd; do

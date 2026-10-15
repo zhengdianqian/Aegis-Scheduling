@@ -2,7 +2,8 @@
 
 ## 2
 
-* **[充电]** 修复部分新 HyperOS 机型（实测 dizi/骁龙8 Gen3）电池温度恒显示 0°C：标准节点/dumpsys/thermal_zone 全为 0 桩，新增 PMIC VADC IIO 温度通道回退与物理合理性校验（charge_guardd 1.2，其他机型行为不变）
+* **[严重修复]** 删除 service.sh/uninstall.sh 中对 `qcom-battery/fake_temp` 的写入：该"清理遗留"动作在 PM7250B 等新内核（实测 dizi/Redmi Pad Pro）上等于注入 0°C，导致系统温度恒 0、JEITA 冷电池保护限充约 5W。模块脚本精简为只做调度/充电阈值/温控三件事，不再改动任何其他系统状态
+* **[充电]** charge_guardd 1.2：温度读取多级回退（标准节点 → PMIC VADC IIO → thermal_zone）+ 物理合理性校验，标准节点正常的机型行为不变
 * **[安装]** 刷入即适配：customize.sh 自动探测本机 CPU 分簇并生成算力权重/perf 范围，升级保留用户规则，失败自动回退包内定值
 * **[版本]** 版本号统一为 2（version/versionCode），作者：默默的阿文
 
