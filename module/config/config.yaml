@@ -43,7 +43,7 @@ CpuIdle:
 #   放缓下降防锯齿。升降对称，无驻留状态。
 #
 # 三档性格（理论分工，参数沿同一组规则微调）：
-#   省电 powersave：压得最深、上限 0.75（中核≤2188）、跳变门槛最高(0.40)，
+#   省电 powersave：压得最深、上限 0.70（中核≤约2112）、跳变门槛最高(0.40)，
 #     只有真实手势起步才直通；回退快（down_wait=2 / slow_down=0.50）。
 #     真机验证：酷安滑动中位 1920（钉频实测流畅线）零丢帧；MT 慢滑贴 499。
 #   标准 balance：压频略浅(0.55)、不封上限，跳变门槛 0.35 比省电档跟手，
@@ -62,7 +62,7 @@ powersave:
     up_rate_limit_ticks: 2
     headroom_factor: 1.15
     perf_floor: 0.0
-    perf_ceil: 0.75
+    perf_ceil: 0.70
     perf_init: 0.25
     up_jump_threshold: 0.35
     slow_up_scale: 0.10
@@ -70,7 +70,7 @@ powersave:
     down_fast_threshold: 0.30
     down_fast_mult: 4.5
     spike_jump_threshold: 0.40
-    low_load_gain: 0.45
+    low_load_gain: 0.40
     interact_fg_util: 0.25
 
 # 标准模式：静态贴底省电，触屏当拍回收防卡
