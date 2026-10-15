@@ -101,9 +101,9 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 
 - 守护二进制 `yumi` → **`Aegis`**：`Cargo.toml` 的 `[[bin]] name`、`xtask` 打包/拷贝路径、`module/.gitignore` 全部同步；包名 `yumi`→`aegis`，描述改为 "Android CPU scheduling daemon (yumi core rebrand)"。
 - `module.prop`：id `aegis_power_matrix`、名称「Aegis」、**版本与 versionCode 均为 `2`**、作者「默默的阿文」、描述「eBPF 负载调频 · 帧感知调度 · 充电阈值 · 温控」，**删除原 updateJson 在线更新地址**（防止被上游更新覆盖定制）。
-- 充电守护 charge_guardd 1.2：电池温度多级回退读取（标准 power_supply 节点 → PMIC VADC IIO `in_temp_bat*therm*` → thermal_zone），修掉部分新 HyperOS 机型（实测 dizi/8Gen3）标准温度节点、dumpsys、thermal_zone **全部恒为 0 桩**导致 WebUI 温度恒显 0°C 的问题；0 值与超出 -20~85°C 的读数一律判无效。标准节点正常的机型（如 8Gen2）走第一级，行为不变。
+- 充电守护 charge_guardd 1.2：电池温度多级回退读取（标准 power_supply 节点 → PMIC VADC IIO `in_temp_bat*therm*` → thermal_zone），修掉部分新 HyperOS 机型（实测 dizi/8Gen3）标准温度节点、dumpsys、thermal_zone **全部恒为 0 桩**导致 WebUI 温度恒显 0°C 的问题；0 值与超出 -20~85°C 的读数一律判无效。标准节点正常的机型（如 8Gen2）走第一级，行为不变。单位按内核 ABI 固定换算（power_supply/dumpsys=0.1°C、thermal_zone=milli°C，仅平台不一的 IIO 用启发式），低温机型不会因单位误判触发高温停充。C 源码不进刷机包（仅在 GitHub 历史/随源码归档），刷入时由 customize.sh 从 `bin/arm64-v8a/` 投放二进制。
 - **刷入即适配**：`tools/aegis_adapt.sh` 随包发布，customize.sh 在刷入时自动完成硬件探测与权重生成（KernelSU 真机验证），失败自动回退包内定值，不阻断安装。
-- **模块脚本只做三件事（2026-10-15 精简）**：service.sh 只负责启动 Aegis 调度守护 / thermal_manager 温控 / charge_guardd 充电阈值；uninstall.sh 只回滚这三者（停守护、停充节点还原、删除投放的 thermal conf）；customize.sh 只保留本模块自身升级时的用户设置继承。**已全部删除**：对 `qcom-battery/fake_temp` 的任何写入、旧 YC/uperf/yumi 模块的停用与继承、resetprop/settings 清理、冻结包恢复、logd 强停等历史遗留动作。
+- **模块脚本只做三件事（2026-10-15 精简）**：service.sh 只负责启动 Aegis 调度守护 / thermal_manager 温控 / charge_guardd 充电阈值（另保留用户确认的 logd 空转抑制）；uninstall.sh 只回滚这三者（停守护、停充节点还原、删除投放的 thermal conf）；customize.sh 只保留本模块自身升级时的用户设置继承。**已删除**：对 `qcom-battery/fake_temp` 的任何写入、旧 YC/uperf/yumi 模块的停用与继承、resetprop/settings 清理、冻结包恢复等历史遗留动作。
   - 删除原因（真机事故）：dizi（Redmi Pad Pro / PM7250B）内核的 `fake_temp` 语义为"注入温度"，旧 service.sh 的"清理遗留"行 `echo 0 > fake_temp` 在该内核等于**注入 0°C** → 电池 health=Cool（JEITA 冷电池保护）→ 限充约 5W、系统与 SCENE 温度恒 0。实测该节点 -999 为关闭注入（回落真实热敏电阻 ~30°C，health 恢复 Good）；8Gen2 等手机内核写 0 虽无副作用，但统一不再触碰该节点，各机型均保持系统默认。
 - `customize.sh`、`config/i18n/zh.ftl|en.ftl`、守护日志文案：全部 Aegis 中文化；`config.yaml` 默认语言改 zh、作者/配置名改 aegis_config。
 - `rules.yaml` 字段 `yumi_scheduler` → `aegis_scheduler`，serde 加了 `alias = "yumi_scheduler"`，**旧规则文件直接兼容**。

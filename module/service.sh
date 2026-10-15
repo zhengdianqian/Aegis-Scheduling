@@ -34,6 +34,15 @@ nohup "$MODDIR/core/bin/Aegis" > /dev/null 2>&1 &
     "$MODDIR/thermal_manager" "$MODDIR" apply "$(cat "$MODDIR/thermal_mode" 2>/dev/null || echo official)"
 ) > /dev/null 2>&1 &
 
+# 压厂商 logd 空转（部分 ROM 日志守护持续写盘费电，老用户确认保留）
+for _p in /system/bin/logd /apex/com.android.runtime/bin/logd; do
+    if [ -x "$_p" ]; then
+        stop logd 2>/dev/null
+        killall -9 logd 2>/dev/null
+        break
+    fi
+done
+
 # ── 3/3 充电阈值：首次扫描停充节点/机型探测，再拉起守护 ──
 (
     CGDIR="$MODDIR/charge_guard"
