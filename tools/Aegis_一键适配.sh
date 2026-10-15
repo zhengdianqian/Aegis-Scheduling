@@ -300,7 +300,7 @@ grep -q '^fas_rules:' "$RULES_NEW" || { echo "错误：rules.yaml 缺 fas_rules"
 for m in powersave balance performance fast; do
     grep -q "^$m:" "$CONFIG_NEW" || { echo "错误：config.yaml 缺 $m 模式"; exit 1; }
 done
-NW=$(grep -c 'capacity_weight' "$RULES_NEW")
+NW=$(grep -c '^    - capacity_weight:' "$RULES_NEW")
 [ "$NW" = "$NCLUSTER" ] || { echo "错误：cluster_profiles 条数($NW) != 簇数($NCLUSTER)"; exit 1; }
 
 # ── 5. 备份 + 部署 + 重启守护 ───────────────────────────────────────
