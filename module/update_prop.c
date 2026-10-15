@@ -211,7 +211,7 @@ int main(int argc, char *argv[])
             "id=aegis_power_matrix\n"
             "name=Aegis\n"
             "version=2\n"
-            "versionCode=20261014\n"
+            "versionCode=2\n"
             "author=默默的阿文\n");
     }
     if (!wrote) fprintf(out, "%s\n", desc);

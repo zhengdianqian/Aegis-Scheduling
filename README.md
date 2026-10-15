@@ -5,8 +5,8 @@
 > 本仓库为个人使用的私密备份，目标：**静态看电视/看小说/低速滑信息流时低功耗，触摸滑动时不掉帧**，换设备或后续调参时一键找回全部上下文。
 
 - 验证主力机：**小米 MIX Fold 3（babylon）· 骁龙 8 Gen2 领先版 SM8550-AC · Android 16 · KernelSU**
-- 版本标识：`v2.0.2-aegis`（versionCode 20261015），调度核心 **CLG v7 无状态公式 + v3 压空转调参（2026-10-15 当晚已三档真机复核，见 §5.3）**
-- 可直接刷入的整包（与 `module/` 目录内容逐一对齐）：[`prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip`](prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip)
+- 版本标识：**版本 `2`（versionCode 2）**，调度核心 **CLG v7 无状态公式 + v3 压空转调参（2026-10-15 三档真机复核，见 §5.3）**
+- 可直接刷入的整包（与 `module/` 目录内容逐一对齐，**刷入时自动按本机硬件适配**，见 §9）：[`prebuilt/Aegis-scheduling-2.zip`](prebuilt/Aegis-scheduling-2.zip)
 
 ---
 
@@ -100,7 +100,9 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 ### 3.1 品牌与模块集成（无行为风险的改名）
 
 - 守护二进制 `yumi` → **`Aegis`**：`Cargo.toml` 的 `[[bin]] name`、`xtask` 打包/拷贝路径、`module/.gitignore` 全部同步；包名 `yumi`→`aegis`，描述改为 "Android CPU scheduling daemon (yumi core rebrand)"。
-- `module.prop`：id `aegis_power_matrix`、名称「Aegis」、版本 `2.0.2-aegis`(versionCode 20261015，与 prebuilt 包名对齐)、描述「eBPF 负载调频 · 帧感知调度 · 充电阈值 · 温控」，**删除原 updateJson 在线更新地址**（防止被上游更新覆盖定制）。
+- `module.prop`：id `aegis_power_matrix`、名称「Aegis」、**版本与 versionCode 均为 `2`**、作者「默默的阿文」、描述「eBPF 负载调频 · 帧感知调度 · 充电阈值 · 温控」，**删除原 updateJson 在线更新地址**（防止被上游更新覆盖定制）。
+- 充电守护 charge_guardd 1.2：电池温度多级回退读取（标准 power_supply 节点 → PMIC VADC IIO `in_temp_bat*therm*` → thermal_zone），修掉部分新 HyperOS 机型（实测 dizi/8Gen3）标准温度节点、dumpsys、thermal_zone **全部恒为 0 桩**导致 WebUI 温度恒显 0°C 的问题；0 值与超出 -20~85°C 的读数一律判无效。标准节点正常的机型（如 8Gen2）走第一级，行为不变。
+- **刷入即适配**：`tools/aegis_adapt.sh` 随包发布，customize.sh 在刷入时自动完成硬件探测与权重生成（KernelSU 真机验证），失败自动回退包内定值，不阻断安装。
 - `service.sh`：启动 `core/bin/Aegis`；清理旧进程时同时 `killall -9 Aegis` 和 `yumi`（防双守护并存）；删掉原版已注释的 Oiface/Joyose/debug 启动等死代码。
 - `uninstall.sh`：去掉对 Oiface/Joyose 的恢复操作（本机从来没禁用过），只留卸载提示。
 - `customize.sh`、`config/i18n/zh.ftl|en.ftl`、守护日志文案：全部 Aegis 中文化；`config.yaml` 默认语言改 zh、作者/配置名改 aegis_config。
@@ -333,7 +335,9 @@ prebuilt 里的整包 = 调度模块 + 充电阈值/温控脚本与二进制（c
 
 ## 9. 换设备移植流程
 
-**一键方式（推荐，已在主力机真机跑通）**：新设备刷入 Aegis 模块后，把 [`tools/Aegis_一键适配.sh`](tools/Aegis_一键适配.sh)（桌面也有一份）用 MT 管理器以 Root 执行。脚本自动：探测分簇/policy/频率/capacity → 按内核同公式算权重 → 直接生成 rules.yaml/config.yaml（仅大块作用注释，字段与本仓库定值逐行一致）→ 备份旧配置（.bak.时间戳）→ 覆盖模块目录 → 重启守护 → 输出 `/sdcard/Aegis_适配建议.txt`。CLG 的阈值/增益类参数跨 SoC 通用，脚本直接沿用，无需手工换算。2026-10-15 已在 MIX Fold 3 真机验证全链路（3 簇识别、权重 1.00/2.43/2.69 自动算对、守护正常重启）。
+**刷入即适配（默认，无需任何操作）**：整包内置 [`module/tools/aegis_adapt.sh`](module/tools/aegis_adapt.sh)，刷入时 customize.sh 自动：探测分簇/policy/频率/capacity → 按内核同公式算权重 → 生成 rules.yaml/config.yaml；升级时保留用户的模式/FAS 开关/每应用规则，只替换 fas_rules 硬件段。任何探测失败都回退包内定值，绝不阻断刷入。2026-10-15 已在 KernelSU 真机验证（dizi/8Gen3：2 簇识别、权重 1.00/2.15 自动算对、旧规则正常合并）。
+
+**手动方式（适配逻辑改动或不想重刷时）**：刷入后把 [`tools/Aegis_一键适配.sh`](tools/Aegis_一键适配.sh)（与包内 aegis_adapt.sh 同内容，桌面也有一份）用 MT 管理器以 Root 执行：探测 → 生成 → 备份旧配置（.bak.时间戳）→ 覆盖模块目录 → 重启守护 → 输出 `/sdcard/Aegis_适配建议.txt`。曾于 MIX Fold 3 真机验证全链路（3 簇识别、权重 1.00/2.43/2.69、守护正常重启）。CLG 的阈值/增益类参数跨 SoC 通用，无需手工换算。
 
 手工流程（脚本逻辑来源）：
 

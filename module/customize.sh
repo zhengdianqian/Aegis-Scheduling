@@ -49,18 +49,50 @@ chmod 755 "$MODPATH/bin/busybox/busybox"
 [ -f "$OLD/thermal_mode" ] && cp "$OLD/thermal_mode" "$MODPATH/thermal_mode"
 [ -f "$MODPATH/thermal_mode" ] || echo "official" > "$MODPATH/thermal_mode"
 
-# ── 调度规则继承：保留用户的模式选择/FAS 开关/每应用规则，
-#    但 fas_rules 内核段替换为包内的 SoC 定制值（如三簇算力权重）──
-if [ -f "$OLD/rules.yaml" ]; then
-    USER_HEAD="$MODPATH/.rules_user_head.tmp"
-    NEW_FAS="$MODPATH/.rules_new_fas.tmp"
-    # 旧文件 fas_rules: 之前的个人配置段（serde 写回时 fas_rules 恒为末段）
-    awk 'BEGIN{p=1} /^fas_rules:/{p=0} p{print}' "$OLD/rules.yaml" > "$USER_HEAD"
-    # 新包文件的 fas_rules 整段
-    awk 'BEGIN{p=0} /^fas_rules:/{p=1} p{print}' "$MODPATH/rules.yaml" > "$NEW_FAS"
-    cat "$USER_HEAD" "$NEW_FAS" > "$MODPATH/rules.yaml"
-    rm -f "$USER_HEAD" "$NEW_FAS"
-    ui_print "- 已保留模式/FAS开关/应用规则，FAS 内核参数已更新"
+# ── 刷入即适配：探测本机 CPU 分簇/capacity，生成簇权重与 perf 范围。
+#    任何失败都回退包内定值（8Gen2 v3 参数），绝不阻断刷入。──
+ADAPT_WORK="${TMPDIR:-/data/local/tmp}"
+AR="$ADAPT_WORK/aegis_rules_new.yaml"
+AC="$ADAPT_WORK/aegis_config_new.yaml"
+ALOG="$ADAPT_WORK/aegis_adapt.log"
+rm -f "$AR" "$AC" "$ALOG" "$ADAPT_WORK/aegis_probe_data.txt"*
+ADAPT_OK=0
+if AEGIS_WORKDIR="$ADAPT_WORK" sh "$MODPATH/tools/aegis_adapt.sh" "$MODPATH" install >"$ALOG" 2>&1; then
+    if [ -s "$AR" ] && [ -s "$AC" ]; then ADAPT_OK=1; fi
+fi
+if [ "$ADAPT_OK" = 1 ]; then
+    NCL=$(grep '^AEGIS_ADAPT_NCLUSTER=' "$ALOG" | head -1 | cut -d= -f2)
+    ui_print "- 硬件适配成功：探测到 ${NCL:-?} 个 CPU 簇"
+    grep '^AEGIS_ADAPT_POLICY=' "$ALOG" | while IFS='=' read -r _line; do
+        _p="${_line#AEGIS_ADAPT_POLICY=}"
+        ui_print "    policy${_p%%|*} 权重 $(echo "$_p" | awk -F'|' '{print $NF}')"
+    done
+    # 调度规则：保留用户的模式/FAS开关/每应用规则，fas_rules 换成本机适配段
+    if [ -f "$OLD/rules.yaml" ]; then
+        USER_HEAD="$ADAPT_WORK/rules_user_head.tmp"
+        NEW_FAS="$ADAPT_WORK/rules_new_fas.tmp"
+        # serde 写回时 fas_rules 恒为末段
+        awk 'BEGIN{p=1} /^fas_rules:/{p=0} p{print}' "$OLD/rules.yaml" > "$USER_HEAD"
+        awk 'BEGIN{p=0} /^fas_rules:/{p=1} p{print}' "$AR" > "$NEW_FAS"
+        cat "$USER_HEAD" "$NEW_FAS" > "$MODPATH/rules.yaml"
+        rm -f "$USER_HEAD" "$NEW_FAS"
+        ui_print "- 已保留模式/FAS开关/应用规则"
+    else
+        cp -f "$AR" "$MODPATH/rules.yaml"
+    fi
+    cp -f "$AC" "$MODPATH/config/config.yaml"
+else
+    ui_print "- ! 自动适配未成功，沿用包内 8Gen2 定值（可用 tools/Aegis_一键适配.sh 手动适配）"
+    # 回退：包内 rules.yaml 的 fas_rules 与旧版用户段合并
+    if [ -f "$OLD/rules.yaml" ]; then
+        USER_HEAD="$ADAPT_WORK/rules_user_head.tmp"
+        NEW_FAS="$ADAPT_WORK/rules_new_fas.tmp"
+        awk 'BEGIN{p=1} /^fas_rules:/{p=0} p{print}' "$OLD/rules.yaml" > "$USER_HEAD"
+        awk 'BEGIN{p=0} /^fas_rules:/{p=1} p{print}' "$MODPATH/rules.yaml" > "$NEW_FAS"
+        cat "$USER_HEAD" "$NEW_FAS" > "$MODPATH/rules.yaml"
+        rm -f "$USER_HEAD" "$NEW_FAS"
+        ui_print "- 已保留模式/FAS开关/应用规则，FAS 内核参数已更新"
+    fi
 fi
 
 # ── 充电阈值：保留配置与开关状态，全新安装默认关闭（去 WebUI 手动开启）──
@@ -86,6 +118,7 @@ set_perm_recursive "$MODPATH/charge_guard" 0 0 0755 0755
 set_perm "$MODPATH/charge_guard.conf" 0 0 0644
 set_perm "$MODPATH/core/bin/Aegis" 0 0 0755
 set_perm "$MODPATH/scripts/disable_boost.sh" 0 0 0755
+set_perm "$MODPATH/tools/aegis_adapt.sh" 0 0 0755
 
 ui_print ""
 ui_print "  🛡️ Aegis"

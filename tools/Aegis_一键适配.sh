@@ -5,14 +5,20 @@
 #   -> 备份旧配置 -> 覆盖到模块目录 -> 重启守护 -> 输出适配建议 TXT
 # 兼容 1/2/3/4 簇设备，纯 POSIX sh + awk，无外部依赖。
 
+# 用法：
+#   已刷入设备上以 Root 手动执行（MT 管理器）：sh Aegis_一键适配.sh
+#   刷包安装期由 customize.sh 调用：       AEGIS_WORKDIR=<临时目录> sh aegis_adapt.sh <模块目录> install
+MODULE_DIR=${1:-/data/adb/modules/aegis_power_matrix}
+MODE=${2:-live}
+WORKDIR=${AEGIS_WORKDIR:-/data/local/tmp}
 OUT=/sdcard/Aegis_适配建议.txt
-DATAF=/data/local/tmp/aegis_probe_data.txt
-RULES_NEW=/data/local/tmp/aegis_rules_new.yaml
-CONFIG_NEW=/data/local/tmp/aegis_config_new.yaml
-MODULE_DIR=/data/adb/modules/aegis_power_matrix
+DATAF=$WORKDIR/aegis_probe_data.txt
+RULES_NEW=$WORKDIR/aegis_rules_new.yaml
+CONFIG_NEW=$WORKDIR/aegis_config_new.yaml
 
 [ "$(id -u)" != "0" ] && { echo "请用 ROOT 身份运行（MT 管理器勾选以 Root 执行）"; exit 1; }
 [ ! -d "$MODULE_DIR" ] && { echo "错误：未找到模块目录 $MODULE_DIR，请先刷入 Aegis"; exit 1; }
+mkdir -p "$WORKDIR" 2>/dev/null
 
 # ── 1. 硬件探测 ──────────────────────────────────────────────────────
 : > "$DATAF"
@@ -303,7 +309,20 @@ done
 NW=$(grep -c '^    - capacity_weight:' "$RULES_NEW")
 [ "$NW" = "$NCLUSTER" ] || { echo "错误：cluster_profiles 条数($NW) != 簇数($NCLUSTER)"; exit 1; }
 
-# ── 5. 备份 + 部署 + 重启守护 ───────────────────────────────────────
+# ── 5a. 刷包安装模式：只生成、不部署不重启（由 customize.sh 合并到模块目录）──
+if [ "$MODE" = "install" ]; then
+    echo "AEGIS_ADAPT_NCLUSTER=$NCLUSTER"
+    echo "AEGIS_ADAPT_MINCAP=$MINCAP"
+    awk -F'|' -v mc="$MINCAP" '
+        {cap=$5+0; r=cap/mc-1; if(r<0)r=0;
+         printf "AEGIS_ADAPT_POLICY=%s|%s|%s|%s|%s|%.2f\n", $1,$2,$3,$4,cap,1+sqrt(r)}
+    ' "$DATAF.sorted"
+    echo "AEGIS_ADAPT_DONE=1"
+    rm -f "$DATAF" "$DATAF.sorted"
+    exit 0
+fi
+
+# ── 5b. 备份 + 部署 + 重启守护（手动执行模式）────────────────────────
 TS=$(date +%Y%m%d_%H%M%S)
 cp "$MODULE_DIR/rules.yaml" "$MODULE_DIR/rules.yaml.bak.$TS" 2>/dev/null
 cp "$MODULE_DIR/config/config.yaml" "$MODULE_DIR/config/config.yaml.bak.$TS" 2>/dev/null
