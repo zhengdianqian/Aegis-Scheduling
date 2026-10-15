@@ -1,6 +1,6 @@
-id=aegis
-name=Aegis 调度
-version=v2.0.2-aegis
-versionCode=20003
-author=Aegis
-description=eBPF 负载调频 · 帧感知调度（Aegis 守护 / FAS 零空转）· 充电阈值 · 温控
+id=aegis_power_matrix
+name=Aegis
+version=2.0.2-aegis
+versionCode=20261015
+author=默默的阿文
+description=eBPF 负载调频 · 帧感知调度 · 充电阈值 · 温控

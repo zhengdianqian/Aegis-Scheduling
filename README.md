@@ -5,8 +5,8 @@
 > 本仓库为个人使用的私密备份，目标：**静态看电视/看小说/低速滑信息流时低功耗，触摸滑动时不掉帧**，换设备或后续调参时一键找回全部上下文。
 
 - 验证主力机：**小米 MIX Fold 3（babylon）· 骁龙 8 Gen2 领先版 SM8550-AC · Android 16 · KernelSU**
-- 版本标识：`v2.0.2-aegis`（versionCode 20003），当前调度核心迭代到 **CLG v7（2026-10-15 真机验证）**
-- 可直接刷入的整包：[`prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip`](prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip)
+- 版本标识：`v2.0.2-aegis`（versionCode 20261015），调度核心 **CLG v7 无状态公式（2026-10-15 真机验证）+ 当晚 v3 压空转调参（理论复核版）**
+- 可直接刷入的整包（与 `module/` 目录内容逐一对齐）：[`prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip`](prebuilt/Aegis-scheduling-2.0.2-aegis-20261015.zip)
 
 ---
 
@@ -37,9 +37,11 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 
 | 真实负载 raw_util | gain | 含义 |
 |---|---|---|
-| ≤ `down_threshold` | `low_load_gain`（0.45~0.75） | 静态/轻载深度压频 |
-| ≥ `up_threshold` | `headroom_factor`（1.15~1.30） | 重载留帧余量 |
+| ≤ `down_threshold` | `low_load_gain`（0.40~0.75） | 静态/轻载深度压频 |
+| ≥ `up_threshold` | `headroom_factor`（1.05~1.10） | 重载留帧余量 |
 | 两阈值之间 | 线性插值 | 平滑过渡 |
+
+> v3 压空转调参（2026-10-15 晚）：v7 首版的 headroom 1.15~1.30 配 up_threshold 0.55~0.75，中载时 target 被放大到 2.7GHz 而实测只需 ~1.6GHz。三档（不含 fast 锁满档）统一收窄：headroom 降到 1.05~1.10、up_threshold 提到 0.75~0.85、down_threshold 提到 0.45~0.55，拓宽中频带，让"负载不高但频率悬空"的区间消失。内核公式与字段完全没变。
 
 **升降频对称，没有驻留状态：**
 
@@ -68,17 +70,21 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 │  │  └─ fps_monitor.rs     ★ eBPF 帧探针懒加载/零空转
 │  └─ common.rs             模块根目录注释（路径回溯按 Aegis 命名）
 ├─ yumi-ebpf/               eBPF 探针程序（未改）
-├─ module/                  刷包骨架
-│  ├─ config/config.yaml    ★ 8Gen2 四模式 CLG 定值（§4.1）
-│  ├─ rules.yaml            ★ 8Gen2 FAS 定值 + FAS 开关语义（§4.2）
-│  ├─ service.sh / customize.sh / uninstall.sh / module.prop  ★ Aegis 品牌化
+├─ module/                  刷包完整内容（与 prebuilt zip 逐一一致，含二进制）
+│  ├─ config/config.yaml    ★ 四模式 CLG 定值（无注释，§4.1）
+│  ├─ rules.yaml            ★ FAS 定值 + FAS 开关语义（§4.2）
+│  ├─ core/bin/Aegis        ★ v7 守护二进制（arm64）
+│  ├─ webroot/index.html    ★ WebUI 构建产物（充电表单修复版）
+│  ├─ bin/ charge_guard/    充电阈值 + 温控组件（charge_guardd/thermal_manager/busybox）
+│  ├─ service.sh / customize.sh / uninstall.sh / module.prop
 │  └─ config/i18n/          守护日志中文化
 ├─ webui/                   Vue WebUI 源码（品牌化 + FAS 开关 + 充电/温控页）
 │  └─ src/views/ChargeView.vue  ★ 修复充电表单轮询回填覆盖编辑（见 §3.6）
 ├─ xtask/                   打包任务（产物名 yumi→Aegis、aegis-*.zip）
 ├─ prebuilt/                ★ 真机验证过的可刷整包（含充电阈值/温控全家桶）
 ├─ tools/
-│  └─ aegis_cpu_probe.sh    ★ 换新设备时的硬件探测脚本
+│  ├─ Aegis_一键适配.sh      ★ 换新设备一键完成：探测硬件/算权重/生成无注释配置/部署/重启
+│  └─ aegis_cpu_probe.sh    早期手工硬件探测脚本（一键适配的底层逻辑来源）
 └─ docs/
    ├─ Aegis调参说明.txt      ★ 完整参数调参手册（v7 版，每个参数的影响）
    ├─ monitor-recovery.md   上游文档
@@ -94,7 +100,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 ### 3.1 品牌与模块集成（无行为风险的改名）
 
 - 守护二进制 `yumi` → **`Aegis`**：`Cargo.toml` 的 `[[bin]] name`、`xtask` 打包/拷贝路径、`module/.gitignore` 全部同步；包名 `yumi`→`aegis`，描述改为 "Android CPU scheduling daemon (yumi core rebrand)"。
-- `module.prop`：id `aegis`、名称「Aegis 调度」、版本 `v2.0.2-aegis`(20003)、描述「eBPF 负载调频 · 帧感知调度（Aegis 守护 / FAS 零空转）· 充电阈值 · 温控」，**删除原 updateJson 在线更新地址**（防止被上游更新覆盖定制）。
+- `module.prop`：id `aegis_power_matrix`、名称「Aegis」、版本 `2.0.2-aegis`(versionCode 20261015，与 prebuilt 包名对齐)、描述「eBPF 负载调频 · 帧感知调度 · 充电阈值 · 温控」，**删除原 updateJson 在线更新地址**（防止被上游更新覆盖定制）。
 - `service.sh`：启动 `core/bin/Aegis`；清理旧进程时同时 `killall -9 Aegis` 和 `yumi`（防双守护并存）；删掉原版已注释的 Oiface/Joyose/debug 启动等死代码。
 - `uninstall.sh`：去掉对 Oiface/Joyose 的恢复操作（本机从来没禁用过），只留卸载提示。
 - `customize.sh`、`config/i18n/zh.ftl|en.ftl`、守护日志文案：全部 Aegis 中文化；`config.yaml` 默认语言改 zh、作者/配置名改 aegis_config。
@@ -150,25 +156,27 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 
 ## 4. 8Gen2 定制参数一览
 
-### 4.1 CLG 四模式（`module/config/config.yaml`，v7 定值）
+### 4.1 CLG 四模式（`module/config/config.yaml`，v7 内核 + v3 压空转定值，文件无注释）
 
 | 参数 | powersave | balance | performance | fast |
 |---|---|---|---|---|
-| up_threshold | 0.75 | 0.70 | 0.55 | 0.01（锁满） |
-| down_threshold | 0.45 | 0.40 | 0.35 | 0.01 |
+| up_threshold | **0.85** | **0.85** | **0.75** | 0.01（锁满） |
+| down_threshold | **0.55** | **0.50** | **0.45** | 0.01 |
 | smoothing_up / down | 0.50 / 0.45 | 0.65 / 0.35 | 0.85 / 0.20 | 1.0 / 0.01 |
 | up / down rate(ticks) | 2 / 2 | 2 / 2 | 1 / 4 | 1 / 10 |
-| headroom_factor（增益高端） | 1.15 | 1.15 | 1.30 | 2.0 |
-| perf_floor / ceil / init | 0 / 0.75 / 0.25 | 0 / 1.0 / 0.35 | 0.10 / 1.0 / 0.55 | 1.0/1.0/1.0 |
-| **low_load_gain（增益低端）** | **0.45** | **0.55** | **0.75** | 1.0 |
-| **spike_jump_threshold** | **0.40** | **0.35** | 0.35 | 0.35 |
+| headroom_factor（增益高端） | **1.05** | **1.05** | **1.10** | 2.0 |
+| perf_floor / ceil / init | 0 / **0.70** / 0.25 | 0 / 1.0 / 0.35 | 0.10 / 1.0 / 0.55 | 1.0/1.0/1.0 |
+| **low_load_gain（增益低端）** | **0.40** | **0.55** | **0.75** | 1.0 |
+| **spike_jump_threshold** | **0.50** | **0.50** | 0.35 | 0.35 |
 | interact_fg_util（jump 闸门） | 0.25 | 0.25 | 0.25 | 0.25 |
-| up_jump / slow_up / slow_down | 0.35/0.10/**0.50** | 0.35/0.15/**0.50** | 0.35/0.15/0.35 | — |
-| down_fast_thresh / mult | 0.30 / 4.5 | 0.30 / 4.0 | 0.15 / 3.0 | — |
+| up_jump / slow_up / slow_down | 0.35/0.10/**0.55** | 0.35/0.15/**0.55** | 0.35/0.15/**0.40** | — |
+| down_fast_thresh / mult | **0.25** / 4.5 | **0.25** / 4.0 | **0.20** / 3.0 | 0.10 / 2.5 |
 
-三档性格：省电档压得最深（gain 0.45 / ceil 0.75 / jump 门槛最高 0.40），只有真实手势起步才直通，回退快；标准档压频略浅、不封上限、jump 0.35 更跟手；性能档低门槛、快升、缓降（down_wait=4）并保留 0.10 底频，档位性格即"倾向驻留高位"。
+三档性格：省电档压得最深（gain 0.40 / ceil 0.70，中核顶 ~2054MHz / jump 门槛最严 0.50）；标准档增益略浅、不封上限；性能档低门槛、快升、缓降（down_wait=4）并保留 0.10 底频。**fast 锁满档不参与任何压空转调整。**
 
-v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配置与代码中删除。
+v3 理论复核（2026-10-15 晚，未再真机实测）：raw 0.20 空转时省电档 target≈0.08（中核 683MHz）、0.42 播放 ≈0.17（~886MHz 后随拍间回落沉底）、0.70 中载 ≈0.51（~1668MHz，不再被旧 headroom 1.15 抬到 2GHz 空转）。唯一观察点：省电/标准档 spike_jump 收到 0.50 后，重图信息流"慢拖起步"理论上有 2~3 拍（200~300ms）追赶期，若真机觉得起步肉，只把该值放回 0.45，其余不动。
+
+v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配置与代码中删除。配置文件内不放任何注释（避免跨设备编码乱码），参数含义以本文档与 `docs/Aegis调参说明.txt` 为准。
 
 ### 4.2 FAS 游戏档（`module/rules.yaml`，要点）
 
@@ -190,7 +198,9 @@ v6 表里的 `interact_hold_ticks`、`spike_decay`、`headroom_ramp` 已从配�
 
 ---
 
-## 5. 真机实测数据（2026-10-15 CLG v7）
+## 5. 真机实测数据（2026-10-15 CLG v7 首版参数）
+
+> 以下数据测于 v7 首版参数（headroom 1.15 / 省电档 ceil 0.75 / jump 0.40）。当晚 v3 调参只在同一公式上收窄增益与阈值（见 §4.1），未重测；钉频流畅线是物理结论，与参数版本无关，仍然有效。
 
 ### 5.1 钉频对照——酷安信息流的真实频率门槛
 
@@ -286,20 +296,24 @@ prebuilt 里的整包 = 调度模块 + 充电阈值/温控脚本与二进制（c
 
 ## 8. 调参手册
 
-完整参数说明见 [docs/Aegis调参说明.txt](docs/Aegis调参说明.txt)（含 perf↔频率换算、每个参数调高/调低的影响、推荐范围与调参纪律）。v7 最常动的三个：
+完整参数说明见 [docs/Aegis调参说明.txt](docs/Aegis调参说明.txt)（含 perf↔频率换算、每个参数调高/调低的影响、推荐范围与调参纪律）。最常动的三个：
 
-- `low_load_gain`：增益曲线低端，静态压频力度。静态还想更省电 → 0.40（低于 0.4 非触摸前台重活会变慢）；觉得安装/计算变慢 → 0.60。
-- `spike_jump_threshold`：手势起步当拍升频的跳变门槛。滑动觉得粘高档空高 → 往 0.40 调；慢滑开头觉得肉 → 往 0.30 调（只影响"到得多快"，不影响到多高）。
-- `slow_down_scale`：滞回带内下降速度。信息流滑动中频率回落太慢 → 往 0.50~0.60 调。
+- `low_load_gain`：增益曲线低端，静态压频力度。当前省电档 0.40（静态压频下限，再低非触摸前台重活会变慢）；觉得安装/计算变慢 → 0.45~0.55。
+- `spike_jump_threshold`：手势起步当拍升频的跳变门槛。当前省电/标准档 0.50（最严，只认真实大跳变）；慢滑开头觉得肉 → 放回 0.45（只影响"到得多快"，不影响到多高）。
+- `slow_down_scale`：滞回带内下降速度。当前 0.55；信息流滑动中频率回落太慢 → 可到 0.60。
 
 原则：**流畅靠「低地板 + 连续增益曲线 + jump 当拍起步 + 快速沉底」，不要抬 perf_floor，也不要重新引入驻留/状态补丁**。怀疑某场景给频不够时，先钉频 + GFX 量出真实流畅线（见 §5.1 酷安实验），再反推增益。
 
 ## 9. 换设备移植流程
 
-1. 把 [`tools/aegis_cpu_probe.sh`](tools/aegis_cpu_probe.sh) 推手机跑（脚本头有用法），拿到：分簇/policy 归属、每簇硬件频率表、每核 cpu_capacity。
-2. 按 `权重 = 1 + √(本簇cap/最小簇cap − 1)` 算各簇权重，写入 `rules.yaml` 的 `cluster_profiles` 并置 `auto_capacity_weight: false`；更新 `rules.yaml` 头部与 `config.yaml` 头部频率注释。
-3. perf↔频率换算：`频率 = 最低频 + perf×(最高频−最低频)`，据此重定 FAS 的 perf_floor/init 与四模式 perf_init；CLG 的比例类参数（阈值/增益/jump 门槛）跨 SoC 通用，一般不用动。
-4. 编译（§6），刷入后用 `dumpsys gfxinfo <pkg> reset` + 滑动脚本验证起步延迟与 jank；重负载信息流建议按 §5.1 钉频量一次真实流畅线再定省电档 ceil/gain，最后按 §8 微调到主观手感。
+**一键方式（推荐）**：新设备刷入 Aegis 模块后，把 [`tools/Aegis_一键适配.sh`](tools/Aegis_一键适配.sh)（桌面也有一份）用 MT 管理器以 Root 执行。脚本自动：探测分簇/policy/频率/capacity → 按内核同公式算权重 → 直接生成**无注释** rules.yaml/config.yaml（字段与本仓库定值一致）→ 备份旧配置（.bak.时间戳）→ 覆盖模块目录 → 重启守护 → 输出 `/sdcard/Aegis_适配建议.txt`。CLG 的阈值/增益类参数跨 SoC 通用，脚本直接沿用，无需手工换算。
+
+手工流程（脚本逻辑来源）：
+
+1. 跑 [`tools/aegis_cpu_probe.sh`](tools/aegis_cpu_probe.sh) 拿到分簇、每簇频率表、每核 cpu_capacity。
+2. 按 `权重 = 1 + √(本簇cap/最小簇cap − 1)` 算各簇权重，写入 `rules.yaml` 的 `cluster_profiles` 并置 `auto_capacity_weight: false`。
+3. perf↔频率换算：`频率 = 最低频 + perf×(最高频−最低频)`，据此重定 FAS 的 perf_floor/init 与四模式 perf_init。
+4. 刷入后用 `dumpsys gfxinfo <pkg> reset` + 滑动验证起步延迟与 jank；重负载信息流按 §5.1 钉频量一次真实流畅线，再按 §8 微调到主观手感。
 
 ## 10. 设计红线与注意事项
 
