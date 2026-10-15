@@ -24,6 +24,8 @@ app_modes:
   com.tencent.tmgp.sgame: "fas"
   com.tencent.tmgp.speedmobile: "fas"
   com.tencent.lolm: "fas"
+  # 小米系统相机（com.android.camera）：预览/录像帧率敏感，进 FAS 帧感知调度
+  com.android.camera: "fas"
   # ── 子场景单独标记（避免被错误放大为全局负载信号）──────────
   # MT管理器：首页滑动频率正常，但"打开 TXT 再滑动"会出现频率空高
   # （文本渲染/读盘瞬时高 util）。钉到省电档：上限 0.70 + spike_jump 0.40
