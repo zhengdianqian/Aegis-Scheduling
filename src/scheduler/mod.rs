@@ -315,6 +315,10 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                 cfg.enabled = true;
                                 cfg.perf_floor = 0.0;
                                 cfg.perf_ceil = cfg.perf_ceil.min(0.40);
+                                // 息屏红线同样约束每簇独立上限
+                                for c in cfg.cluster_ceil.iter_mut() {
+                                    *c = c.min(0.40);
+                                }
                                 cfg.smoothing_up = 0.10;
                                 cfg.smoothing_down = 1.0;
                             }

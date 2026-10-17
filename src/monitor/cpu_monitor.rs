@@ -131,36 +131,79 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<()> {
         }
         last_cores.retain(|cpu, _| cpus.contains(cpu));
         let pid = app_detect::get_current_pid().max(0) as u32;
-        if pid != last_pid {
-            last_threads.clear();
-            last_pid = pid;
-        }
-        // The scheduler expects the busiest foreground thread, not a sum of
-        // unrelated TGIDs. Resolve membership from /proc and difference full
-        // snapshots, including pending runtime on both sides of the sample.
+        // Foreground attribution uses the kernel-maintained top-app cpuset as
+        // the authoritative signal: ActivityManager places the foreground
+        // app's ENTIRE process tree there (main process, WebView/sandboxed
+        // renderer children, mini-program processes, plus system_server input
+        // dispatch). This covers every app generically — no package names —
+        // and a full read costs ~0.1ms/tick. An empty set means nobody is
+        // top-app (e.g. screen off) → foreground util naturally reads 0.
+        // Only fall back to scanning /proc/<pid>/task when the node is absent
+        // (non-standard ROMs).
+        let top_tids = read_topapp_tids();
         let mut next_threads = HashMap::new();
         let mut foreground_max_util = 0.0f32;
-        if pid > 0 {
-            if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) {
-                for entry in entries.flatten() {
-                    let Some(tid) = entry
-                        .file_name()
-                        .to_str()
-                        .and_then(|s| s.parse::<u32>().ok())
-                    else {
-                        continue;
-                    };
-                    let raw = match threads.get(&tid, 0) {
-                        Ok(value) => value,
-                        Err(aya::maps::MapError::KeyNotFound) => 0,
-                        Err(error) => return Err(error).context("read THREAD_RUN_TIME"),
-                    };
-                    let current =
-                        raw.saturating_add(pending_by_tid.get(&tid).copied().unwrap_or(0));
-                    let delta = runtime_delta(last_threads.get(&tid).copied(), current);
-                    foreground_max_util =
-                        foreground_max_util.max((delta as f32 / elapsed as f32).clamp(0.0, 1.0));
-                    next_threads.insert(tid, current);
+
+        // Difference full per-tid snapshots, including pending runtime on
+        // both sides of the sample. The scheduler expects the busiest
+        // foreground THREAD, not a sum of unrelated tasks.
+        let measure_tid = |tid: u32,
+                               previous: Option<u64>,
+                               next: &mut HashMap<u32, u64>,
+                               max_util: &mut f32|
+         -> std::result::Result<(), aya::maps::MapError> {
+            let raw = match threads.get(&tid, 0) {
+                Ok(value) => value,
+                Err(aya::maps::MapError::KeyNotFound) => 0,
+                Err(error) => return Err(error),
+            };
+            let current =
+                raw.saturating_add(pending_by_tid.get(&tid).copied().unwrap_or(0));
+            let delta = runtime_delta(previous, current);
+            *max_util = (*max_util).max((delta as f32 / elapsed as f32).clamp(0.0, 1.0));
+            next.insert(tid, current);
+            Ok(())
+        };
+
+        match &top_tids {
+            Some(tids) => {
+                // Membership diff doubles as baseline invalidation: a tid that
+                // left top-app is dropped; on re-entry its first delta is 0
+                // (no previous baseline), so no stale-baseline spike.
+                for &tid in tids {
+                    measure_tid(
+                        tid,
+                        last_threads.get(&tid).copied(),
+                        &mut next_threads,
+                        &mut foreground_max_util,
+                    )
+                    .context("read THREAD_RUN_TIME")?;
+                }
+            }
+            None => {
+                if pid != last_pid {
+                    last_threads.clear();
+                    last_pid = pid;
+                }
+                if pid > 0 {
+                    if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+                        for entry in entries.flatten() {
+                            let Some(tid) = entry
+                                .file_name()
+                                .to_str()
+                                .and_then(|s| s.parse::<u32>().ok())
+                            else {
+                                continue;
+                            };
+                            measure_tid(
+                                tid,
+                                last_threads.get(&tid).copied(),
+                                &mut next_threads,
+                                &mut foreground_max_util,
+                            )
+                            .context("read THREAD_RUN_TIME")?;
+                        }
+                    }
                 }
             }
         }
@@ -185,4 +228,17 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<()> {
             return Ok(());
         }
     }
+}
+
+/// Read the kernel-maintained top-app cpuset membership.
+/// `None`  = node unavailable (caller falls back to /proc/<pid>/task);
+/// `Some([])` = read OK but no foreground top-app (foreground util = 0).
+fn read_topapp_tids() -> Option<Vec<u32>> {
+    let content = std::fs::read_to_string("/dev/cpuset/top-app/tasks").ok()?;
+    Some(
+        content
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect(),
+    )
 }

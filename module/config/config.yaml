@@ -42,6 +42,10 @@ powersave:
     spike_jump_threshold: 0.50
     low_load_gain: 0.40
     interact_fg_util: 0.25
+    # 前台进程树整体空闲时（真·静止），目标 perf 深度封顶
+    background_ceiling: 0.25
+    # 按簇序号（policy 升序）独立封顶；与 perf_ceil 一致=不额外收紧，想只压大核单独改末位
+    cluster_ceil: [0.70, 0.70, 0.70]
 
 # 标准模式：目标紧跟真实负载，不封最高频
 balance:
@@ -64,6 +68,10 @@ balance:
     spike_jump_threshold: 0.50
     low_load_gain: 0.55
     interact_fg_util: 0.25
+    # 前台进程树整体空闲时（真·静止：无动画无渲染），目标 perf 额外封顶
+    background_ceiling: 0.35
+    # 按簇序号（小核/中核/超大核）独立封顶；标准模式不限制，1.0=不封
+    cluster_ceil: [1.0, 1.0, 1.0]
 
 # 性能模式：低门槛快升缓降，保留 0.10 底频
 performance:
@@ -86,6 +94,10 @@ performance:
     spike_jump_threshold: 0.35
     low_load_gain: 0.75
     interact_fg_util: 0.25
+    # 前台空闲压频放宽（性能模式更看重即时响应），仅前台树整体空闲拍生效
+    background_ceiling: 0.45
+    # 按簇序号（policy 升序）独立封顶；性能模式不封顶，1.0=不封
+    cluster_ceil: [1.0, 1.0, 1.0]
 
 # 极速模式：锁满频，不参与调频
 fast:

@@ -70,9 +70,21 @@ pub struct CpuLoadGovernorConfig {
     /// 超过此值时，负载突增才被认定为真实交互并触发当拍升频。用于排除系统
     /// 后台突发（同步/厂商服务）。0 = 不校验前台。
     #[serde(default = "d_clg_interact_fg")] pub interact_fg_util: f32,
+    /// 前台空闲压频上限：当 top-app cpuset 内没有任何线程利用率超过
+    /// interact_fg_util 时（即用户可见的 App 进程树整体空闲），本拍目标
+    /// perf 额外封顶到此值。用于压制后台/厂商服务在中核、超大核上的无效
+    /// 抬频（静态阅读时的 MIUI churn、手指离开后的渲染余波）。每拍独立
+    /// 计算、无状态无驻留；前台线程一旦忙碌（含 WebView 渲染子进程）
+    /// 本拍立即解除。1.0 = 不限制（默认，行为同旧版）。
+    #[serde(default = "d_clg_bg_ceil")] pub background_ceiling: f32,
+    /// 按簇序号（policy id 升序，0=小核、1=中核、2=超大核）逐簇覆盖
+    /// perf_ceil。缺省或越位的簇回退 perf_ceil；空表 = 不覆盖。
+    /// 用于单独压低超大核过给（如 [1.0, 1.0, 0.65]），不影响中小核。
+    #[serde(default)] pub cluster_ceil: Vec<f32>,
 }
 
 fn d_clg_interact_fg() -> f32 { 0.25 }
+fn d_clg_bg_ceil() -> f32 { 1.0 }
 
 fn d_clg_up_thresh() -> f32 { 0.80 }
 fn d_clg_down_thresh() -> f32 { 0.50 }
@@ -114,6 +126,8 @@ impl Default for CpuLoadGovernorConfig {
             spike_jump_threshold: d_clg_spike_jump(),
             low_load_gain: d_clg_low_gain(),
             interact_fg_util: d_clg_interact_fg(),
+            background_ceiling: d_clg_bg_ceil(),
+            cluster_ceil: Vec::new(),
         }
     }
 }
@@ -139,6 +153,7 @@ impl CpuLoadGovernorConfig {
         if !self.down_fast_mult.is_finite() { self.down_fast_mult = d_clg_down_fast_mult(); }
         if !self.spike_jump_threshold.is_finite() { self.spike_jump_threshold = d_clg_spike_jump(); }
         if !self.low_load_gain.is_finite() { self.low_load_gain = d_clg_low_gain(); }
+        if !self.background_ceiling.is_finite() { self.background_ceiling = d_clg_bg_ceil(); }
 
         // 区间限制（语义约束）
         self.up_threshold = self.up_threshold.clamp(0.0, 1.0);
@@ -170,6 +185,16 @@ impl CpuLoadGovernorConfig {
         self.perf_ceil = self.perf_ceil.clamp(0.0, 1.0);
         if self.perf_floor > self.perf_ceil {
             self.perf_floor = self.perf_ceil;
+        }
+        // 背景压频上限：不低于 floor、不高于全局 ceil
+        self.background_ceiling = self.background_ceiling
+            .clamp(0.0, 1.0)
+            .max(self.perf_floor)
+            .min(self.perf_ceil);
+        // 每簇独立上限：非有限值回退全局 ceil，其余夹到 [floor, 1.0]
+        for c in self.cluster_ceil.iter_mut() {
+            if !c.is_finite() { *c = self.perf_ceil; }
+            *c = c.clamp(0.0, 1.0).max(self.perf_floor);
         }
         self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
     }

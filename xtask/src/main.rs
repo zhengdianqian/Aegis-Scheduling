@@ -153,6 +153,10 @@ fn build_webui(sh: &Shell) -> Result<()> {
     println!("正在编译 WebUI...");
     // push_dir 类似于 cd，离开作用域后会自动切回原目录
     let _dir = sh.push_dir("webui");
+    // Windows 上 npm 是 npm.cmd，xshell 无法按 PATHEXT 解析，需要走 cmd /c
+    #[cfg(windows)]
+    cmd!(sh, "cmd /c npm run build").run()?;
+    #[cfg(not(windows))]
     cmd!(sh, "npm run build").run()?;
     Ok(())
 }

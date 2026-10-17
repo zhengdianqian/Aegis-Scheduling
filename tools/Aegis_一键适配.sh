@@ -183,6 +183,13 @@ echo "  fixed_max_frame_ms: 500.0"
 echo "  cold_boot_ms: 3500"
 } > "$RULES_NEW"
 
+# ── 2.5 动态生成各模式 cluster_ceil 向量（policy 升序，槽位数=本机簇数）──
+CEIL_PS=$(awk -F'|' '{printf "%.2f, ", 0.70}' "$DATAF.sorted" | sed 's/, $//')
+CEIL_BAL=$(awk -F'|' '{printf "%.2f, ", 1.0}' "$DATAF.sorted" | sed 's/, $//')
+CEIL_PERF="$CEIL_BAL"
+# 超大核 = fmax 最高的簇，输出其在 cluster_ceil 中的槽位（1-based）
+PRIME_SLOT=$(awk -F'|' 'BEGIN{m=-1;s=0} {if($4+0>m){m=$4+0;s=NR}} END{print s}' "$DATAF.sorted")
+
 # ── 3. 生成 config.yaml（v7 内核 / v3 调参，fast 锁满）─────────────
 {
 echo "# 元信息"
@@ -229,6 +236,10 @@ echo "    down_fast_mult: 4.5"
 echo "    spike_jump_threshold: 0.50"
 echo "    low_load_gain: 0.40"
 echo "    interact_fg_util: 0.25"
+echo "    # 前台进程树整体空闲时（真·静止），目标 perf 深度封顶"
+echo "    background_ceiling: 0.25"
+echo "    # 按簇封顶（policy 升序，槽位数=本机簇数）；与 perf_ceil 一致，想只压大核单独改末位"
+echo "    cluster_ceil: [$CEIL_PS]"
 echo
 echo "# 标准模式：目标紧跟真实负载，不封最高频"
 echo "balance:"
@@ -251,6 +262,10 @@ echo "    down_fast_mult: 4.0"
 echo "    spike_jump_threshold: 0.50"
 echo "    low_load_gain: 0.55"
 echo "    interact_fg_util: 0.25"
+echo "    # 前台进程树整体空闲时（真·静止），目标 perf 额外封顶"
+echo "    background_ceiling: 0.35"
+echo "    # 按簇封顶（policy 升序）；标准模式不限制，1.0=不封"
+echo "    cluster_ceil: [$CEIL_BAL]"
 echo
 echo "# 性能模式：低门槛快升缓降，保留 0.10 底频"
 echo "performance:"
@@ -273,6 +288,10 @@ echo "    down_fast_mult: 3.0"
 echo "    spike_jump_threshold: 0.35"
 echo "    low_load_gain: 0.75"
 echo "    interact_fg_util: 0.25"
+echo "    # 前台空闲压频放宽（性能模式更看重即时响应），仅前台树整体空闲拍生效"
+echo "    background_ceiling: 0.45"
+echo "    # 按簇封顶（policy 升序）；性能模式不封顶，1.0=不封"
+echo "    cluster_ceil: [$CEIL_PERF]"
 echo
 echo "# 极速模式：锁满频，不参与调频"
 echo "fast:"
@@ -308,6 +327,9 @@ for m in powersave balance performance fast; do
 done
 NW=$(grep -c '^    - capacity_weight:' "$RULES_NEW")
 [ "$NW" = "$NCLUSTER" ] || { echo "错误：cluster_profiles 条数($NW) != 簇数($NCLUSTER)"; exit 1; }
+grep -q 'background_ceiling:' "$CONFIG_NEW" || { echo "错误：config.yaml 缺 background_ceiling"; exit 1; }
+NC=$(grep -c 'cluster_ceil:' "$CONFIG_NEW")
+[ "$NC" = "3" ] || { echo "错误：cluster_ceil 应出现在 3 个模式，实际 $NC"; exit 1; }
 
 # ── 5a. 刷包安装模式：只生成、不部署不重启（由 customize.sh 合并到模块目录）──
 if [ "$MODE" = "install" ]; then
@@ -353,6 +375,9 @@ awk -F'|' -v mc="$MINCAP" '
     {cap=$5+0; if(cap<=0)cap=mc; r=cap/mc-1; if(r<0)r=0; w=1+sqrt(r);
      printf "%-8s %-14s %-12s %-14s %-10s %.2f\n", "policy"$1, $2, $3, $4, cap, w}
 ' "$DATAF.sorted"
+echo
+echo "提示：cluster_ceil 按上表 policy 升序映射槽位；本机 $NCLUSTER 簇，"
+echo "      超大核在第 $PRIME_SLOT 位（fmax 最高）。想只压大核：改该模式 cluster_ceil 末位。"
 echo
 echo "【二】perf → 各簇频率参考（perf 0.0=最低频，1.0=最高频）"
 echo "────────────────────────────────────────────────────────────────────"

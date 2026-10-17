@@ -334,11 +334,26 @@ impl CpuLoadGovernor {
     pub fn on_load_update(&mut self, core_utils: &[f32], fg_max_util: f32) {
         if !self.active { return; }
 
-        for cluster in &mut self.clusters {
+        for (idx, cluster) in self.clusters.iter_mut().enumerate() {
             let raw_util = cluster.max_util(core_utils);
             let jump = raw_util - cluster.last_util;
             cluster.last_util = raw_util;
 
+            // 每簇独立上限：cluster_ceil[idx] 覆盖全局 perf_ceil（缺省回退）。
+            // normalize 已保证其 ∈ [perf_floor, 1.0]，这里防御性再夹一次。
+            let eff_ceil = self.cfg.cluster_ceil.get(idx).copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(self.cfg.perf_ceil)
+                .clamp(self.cfg.perf_floor, 1.0);
+            // 前台进程树（top-app cpuset）整体空闲时，本拍负载来自后台/系统
+            // 任务，目标额外封顶 background_ceiling；任何前台线程一旦忙碌
+            // （含 WebView/沙箱渲染子进程）本拍即解除。纯函数判定、无驻留。
+            let fg_idle = fg_max_util < self.cfg.interact_fg_util;
+            let upper = if fg_idle {
+                eff_ceil.min(self.cfg.background_ceiling)
+            } else {
+                eff_ceil
+            };
             // ── v7：一条连续增益曲线，无状态、无交互模式、无驻留 ─────────────
             // 频率只跟随真实负载。增益 g 随负载单调线性变化、整条曲线连续：
             //   raw ≤ down_threshold : g = low_load_gain（静态/后台深度压频）
@@ -353,7 +368,7 @@ impl CpuLoadGovernor {
             let gain = self.cfg.low_load_gain
                 + (self.cfg.headroom_factor - self.cfg.low_load_gain) * pos;
             let target_perf = (raw_util * gain)
-                .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+                .clamp(self.cfg.perf_floor, upper);
             let old_perf = cluster.current_perf;
 
             if target_perf > old_perf {
@@ -413,7 +428,7 @@ impl CpuLoadGovernor {
                 }
             }
 
-            cluster.current_perf = cluster.current_perf.clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+            cluster.current_perf = cluster.current_perf.clamp(self.cfg.perf_floor, upper);
             let target_freq = cluster.find_nearest_freq(cluster.current_perf);
             cluster.write_freq(target_freq);
         }
