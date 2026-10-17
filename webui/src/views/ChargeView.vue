@@ -112,11 +112,17 @@ function renderStatus(s: Kv) {
   if (s.powered !== '1') {
     statusText.value = `${lv}% · ${tmp}°C · ${t('cg_not_charging')}`;
   } else if (s.stopped === '1') {
-    const reasons: string[] = [];
-    if (s.reason_battery === '1') reasons.push(t('cg_reason_battery') as string);
-    if (s.reason_temp === '1') reasons.push(t('cg_reason_temp') as string);
-    if (s.sched_held === '1') reasons.push(t('cg_reason_sched') as string);
-    statusText.value = `${t('cg_stopped')}（${reasons.join('+') || t('cg_reason_battery')}）· ${lv}% · ${tmp}°C`;
+    // v1.3：stopped 标记存在但实际仍在充电 → 显示漏充告警
+    if (s.leak === '1') {
+      const node = (s.node || '').split('/').pop() || '--';
+      statusText.value = t('cg_leak', { node }) as string;
+    } else {
+      const reasons: string[] = [];
+      if (s.reason_battery === '1') reasons.push(t('cg_reason_battery') as string);
+      if (s.reason_temp === '1') reasons.push(t('cg_reason_temp') as string);
+      if (s.sched_held === '1') reasons.push(t('cg_reason_sched') as string);
+      statusText.value = `${t('cg_stopped')}（${reasons.join('+') || t('cg_reason_battery')}）· ${lv}% · ${tmp}°C`;
+    }
   } else {
     statusText.value = `${t('cg_charging')} · ${lv}% · ${tmp}°C`;
   }
@@ -212,10 +218,14 @@ async function save() {
   }
   dirty = true;
   const errs: string[] = [];
-  if (!(form.power_stop >= 1 && form.power_stop <= 100)) errs.push('停止电量需在 1-100');
-  if (!(form.power_start >= 1 && form.power_start <= 100)) errs.push('恢复电量需在 1-100');
-  if (form.power_stop <= form.power_start) errs.push('停止电量必须大于恢复电量');
-  if (!(form.power_stop_time >= 1 && form.power_stop_time <= 120)) errs.push('停充延时需在 1-120 秒');
+  if (form.charge_full !== 1) {
+    if (!(form.power_stop >= 1 && form.power_stop <= 100)) errs.push('停止电量需在 1-100');
+    if (!(form.power_start >= 1 && form.power_start <= 100)) errs.push('恢复电量需在 1-100');
+    if (form.power_stop <= form.power_start) errs.push('停止电量必须大于恢复电量');
+    if (!(form.power_stop_time >= 1 && form.power_stop_time <= 120)) errs.push('停充延时需在 1-120 秒');
+  }
+  if (form.charge_full !== 0 && form.charge_full !== 1) errs.push('充满再停需为 0 或 1');
+  if (form.power_reset !== 0 && form.power_reset !== 1) errs.push('自动拔插需为 0 或 1');
   if (form.temperature_switch) {
     if (!(form.temperature_switch_stop >= 25 && form.temperature_switch_stop <= 70 &&
           form.temperature_switch_start >= 25 && form.temperature_switch_start <= 70)) errs.push('温度需在 25-70℃');
@@ -312,9 +322,9 @@ onUnmounted(() => clearInterval(timer));
 
     <template v-if="cgOn && !confMissing">
       <van-cell-group inset class="cg-group">
-        <van-field v-model.number="form.power_stop" type="number" :label="t('power_stop')" input-align="right" />
-        <van-field v-model.number="form.power_start" type="number" :label="t('power_start')" input-align="right" />
-        <van-field v-model.number="form.power_stop_time" type="number" :label="t('power_stop_time')" input-align="right" />
+        <van-field v-model.number="form.power_stop" type="number" :label="t('power_stop')" input-align="right" :disabled="form.charge_full === 1" />
+        <van-field v-model.number="form.power_start" type="number" :label="t('power_start')" input-align="right" :disabled="form.charge_full === 1" />
+        <van-field v-model.number="form.power_stop_time" type="number" :label="t('power_stop_time')" input-align="right" :disabled="form.charge_full === 1" />
         <van-cell center :title="t('charge_full')">
           <template #right-icon>
             <van-switch v-model="form.charge_full" :active-value="1" :inactive-value="0" />
