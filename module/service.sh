@@ -43,14 +43,13 @@ for _p in /system/bin/logd /apex/com.android.runtime/bin/logd; do
     fi
 done
 
-# ── 3/3 充电阈值：首次扫描停充节点/机型探测，再拉起守护 ──
+# ── 3/3 充电阈值：首次扫描停充节点，再拉起 C 守护（v1.3 闭环验证版）──
 (
     CGDIR="$MODDIR/charge_guard"
     mkdir -p "$CGDIR/data"
-    [ -f "$CGDIR/data/list_switch" ]    || "$CGDIR/list_switch.sh"   > /dev/null 2>&1
-    [ -f "$CGDIR/data/device.profile" ] || "$CGDIR/detect_device.sh" > /dev/null 2>&1
+    [ -f "$CGDIR/data/list_switch" ] || "$CGDIR/list_switch.sh" > /dev/null 2>&1
     pkill -f charge_guardd 2>/dev/null
-    exec "$MODDIR/charge_guardd" "$MODDIR"
+    exec "$MODDIR/charge_guardd"
 ) > /dev/null 2>&1 &
 
 # ── 管理器 APK：保证刷完桌面有图标（未安装或包内 APK 更新时自动安装）──
