@@ -5,8 +5,9 @@
 > 本仓库为个人使用的私密备份，目标：**静态看电视/看小说/低速滑信息流时低功耗，触摸滑动时不掉帧**，换设备或后续调参时一键找回全部上下文。
 
 - 验证主力机：**小米 MIX Fold 3（babylon）· 骁龙 8 Gen2 领先版 SM8550-AC · Android 16 · KernelSU**
-- 版本标识：**版本 `2`（versionCode 2）**，调度核心 **CLG v7 无状态公式 + v3 压空转调参（2026-10-15 三档真机复核，见 §5.3）**；**2026-10-17 前台识别重构（top-app 全进程树）+ 前台空闲压频 + 按簇封顶（见 §3.7、§5.5）**
-- 可直接刷入的整包（与 `module/` 目录内容逐一对齐，**刷入时自动按本机硬件适配**，见 §9）：[`prebuilt/Aegis-scheduling-2.zip`](prebuilt/Aegis-scheduling-2.zip)
+- 版本标识：**版本 `4`（versionCode 4）**，调度核心 **CLG v7 无状态公式 + v3 压空转调参（2026-10-15 三档真机复核，见 §5.3）**；**2026-10-17 前台识别重构（top-app 全进程树）+ 前台空闲压频 + 按簇封顶（见 §3.7、§5.5）**；**2026-10-18 充电阈值控制 v1.3（真断电验证/假节点拉黑/预约充电/涓流充电）**
+- 可直接刷入的整包（与 `module/` 目录内容逐一对齐，**刷入时自动按本机硬件适配**，见 §9）：[`prebuilt/Aegis-scheduling-4.zip`](prebuilt/Aegis-scheduling-4.zip)
+- 配套管理 APP（充电阈值控制页面对齐 V4）：[`prebuilt/Aegis_manager.apk`](prebuilt/Aegis_manager.apk)
 
 ---
 
