@@ -1,5 +1,6 @@
 #!/system/bin/sh
 # 充电节点写入：用户 power_switch + 通用 fallback + MCA / preferred 优先
+# v1.3 闭环验证：写后回读 + 轮询 status/current_now 确认真断电，假节点拉黑
 
 # 各机型常见节点兜底（与 list_switch 扫描互补）
 # 各机型常见停充节点；运行时仍以文件是否存在为准。
@@ -81,6 +82,15 @@ ZG_FALLBACK_SWITCHES="\
 
 ZG_USER_SWITCHES=""
 
+# ── 限流型节点判定：这些节点 start 值是电流，不能硬编码恢复 ──
+zg_is_current_limit_node() {
+	case "$1" in
+		*constant_charge_current_max*|*current_max*|*input_current_max*|*charge_current*|*fast_charge_current_max*|*charge_control_limit*)
+			return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 zg_write_node() {
 	local node="$1"
 	local val="$2"
@@ -91,17 +101,106 @@ zg_write_node() {
 		zg_log_once "wn_$key" warn "写入节点失败 $node ← $val"
 		return 1
 	fi
-	# ★ 写后回读校验：部分节点（实测如 kalama 的 charging_suspend_battery）
-	#   write() 返回成功但内核根本不生效（读回仍是旧值），不校验的话
-	#   WebUI/守护会误以为停充成功。内核可能回显规范化分隔符（tab/逗号），
-	#   比较前做空白归一；读不回内容的节点跳过校验（由 C 守护的
-	#   write_node 回读逻辑兜底）。
+	# 写后回读校验：部分节点 write() 返回成功但内核不生效
 	got="$(cat "$node" 2>/dev/null)"
 	if [ -n "$got" ] && [ "$(echo $got)" != "$(echo $val)" ]; then
 		key="$(echo "$node" | tr / _)"
 		zg_log_once "wnv_$key" warn "节点写入未生效（回读不一致）$node want=$val got=$got"
 		return 1
 	fi
+	return 0
+}
+
+# ── 真断电验证：轮询 status + current_now，确认真的停充了 ──
+# 返回 0 = 已断电，1 = 仍在充电
+zg_verify_stopped() {
+	local tries="${1:-5}"
+	local i st cur cur_abs
+	for i in $(seq 1 "$tries"); do
+		st="$(cat /sys/class/power_supply/battery/status 2>/dev/null)"
+		case "$st" in
+			"Not charging"|"Discharging"|"Full") return 0 ;;
+		esac
+		# 部分机型 status 不变但电流转正（放电）
+		cur="$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)"
+		if [ -n "$cur" ]; then
+			cur_abs="${cur#-}"
+			# 放电时 current_now 为正；充电时为负
+			if [ "$cur" -gt 0 ] 2>/dev/null; then
+				return 0
+			fi
+		fi
+		sleep 1
+	done
+	return 1
+}
+
+# ── 假节点拉黑：bad_switch 每行 "path timestamp"，7 天过期 ──
+zg_is_bad_switch() {
+	local path="$1"
+	[ -f "$DATADIR/bad_switch" ] || return 1
+	local now line p ts
+	now="$(date +%s 2>/dev/null)" || now=0
+	while IFS= read -r line; do
+		[ -z "$line" ] && continue
+		p="${line%% *}"
+		ts="${line##* }"
+		[ "$p" = "$path" ] || continue
+		if [ "$now" -gt 0 ] && [ $((now - ts)) -lt 604800 ]; then
+			return 0
+		fi
+	done < "$DATADIR/bad_switch"
+	return 1
+}
+
+zg_blacklist_switch() {
+	local path="$1"
+	local now
+	now="$(date +%s 2>/dev/null)" || now=0
+	# 清理过期条目
+	local tmp="$DATADIR/.bad_switch.tmp"
+	if [ -f "$DATADIR/bad_switch" ]; then
+		while IFS= read -r line; do
+			[ -z "$line" ] && continue
+			local p="${line%% *}" ts="${line##* }"
+			if [ "$now" -gt 0 ] && [ $((now - ts)) -lt 604800 ]; then
+				echo "$line"
+			fi
+		done < "$DATADIR/bad_switch" > "$tmp"
+		mv -f "$tmp" "$DATADIR/bad_switch"
+	fi
+	# 去重追加
+	if ! zg_is_bad_switch "$path"; then
+		echo "$path $now" >> "$DATADIR/bad_switch"
+	fi
+}
+
+# ── 限流节点原值保存/恢复（避免硬编码 3000000 封顶快充）──
+zg_save_orig_value() {
+	local path="$1"
+	local val="$2"
+	local tmp="$DATADIR/.orig_values.tmp"
+	local found=0
+	if [ -f "$DATADIR/orig_values" ]; then
+		while IFS= read -r line; do
+			[ -z "$line" ] && continue
+			local p="${line%% *}"
+			if [ "$p" = "$path" ]; then
+				echo "$path $val"
+				found=1
+			else
+				echo "$line"
+			fi
+		done < "$DATADIR/orig_values" > "$tmp"
+	fi
+	[ "$found" = "0" ] && echo "$path $val" >> "$tmp"
+	mv -f "$tmp" "$DATADIR/orig_values" 2>/dev/null
+}
+
+zg_get_orig_value() {
+	local path="$1"
+	[ -f "$DATADIR/orig_values" ] || return 1
+	grep "^$path " "$DATADIR/orig_values" 2>/dev/null | tail -n1 | sed "s|^$path ||"
 }
 
 # 将一行配置规范为 path,start=X,stop=Y（兼容 [] 与 :: 空格写法）
@@ -113,7 +212,6 @@ zg_normalize_power_switch_entry() {
 	case "$raw" in
 		\#*) return 1 ;;
 	esac
-	# power_switch=[...] 或 power_switch=...
 	case "$raw" in
 		power_switch=\[*\])
 			body="$(echo "$raw" | sed 's/^power_switch=\[//;s/\]$//')"
@@ -126,7 +224,6 @@ zg_normalize_power_switch_entry() {
 			;;
 	esac
 	body="$(echo "$body" | sed 's/::/_/g')"
-	# 已是内部逗号格式
 	case "$body" in
 		*,start=*,stop=*)
 			echo "$body"
@@ -163,31 +260,6 @@ zg_load_user_switches() {
 	fi
 }
 
-# 按列表写停充/恢复；ok_var 为 stop_ok 或 start_ok
-zg_write_switch_list() {
-	local mode="$1"
-	local list="$2"
-	local i route val
-	for i in $list; do
-		route="$(echo "$i" | sed -n 's/,start=.*//g;$p')"
-		[ -f "$route" ] || continue
-		if [ "$mode" = "stop" ]; then
-			val="$(echo "$i" | sed -n 's/.*,stop=//g;s/_/ /g;$p')"
-			zg_write_node "$route" "$val"
-			stop_nodes="$stop_nodes $route=$val"
-			log_log=1
-			stop_ok=1
-		else
-			val="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
-			zg_write_node "$route" "$val"
-			start_node="$route"
-			start_val="$val"
-			log_log2=1
-			start_ok=1
-		fi
-	done
-}
-
 # 组装 switch_list：扫描结果 + 兜底 +（若有）本机 MCA；并加载用户 power_switch
 zg_build_switch_list() {
 	switch_list="$(cat "$LIST_SWITCH" 2>/dev/null)"
@@ -204,43 +276,134 @@ zg_mca_write() {
 	local label="$2"
 	[ "$ZG_MCA" = "1" ] || return 1
 	[ -n "$ZG_MCA_PATH" ] && [ -f "$ZG_MCA_PATH" ] || return 1
-	zg_write_node "$ZG_MCA_PATH" "$val"
+	zg_write_node "$ZG_MCA_PATH" "$val" || return 1
 	if [ "$label" = "stop" ]; then
-		stop_nodes="$ZG_MCA_PATH=$val (MCA)"
-		log_log=1
-		stop_ok=1
+		# MCA 也需真断电验证
+		if zg_verify_stopped 5; then
+			stop_nodes="$ZG_MCA_PATH=$val (MCA)"
+			log_log=1
+			stop_ok=1
+			return 0
+		fi
+		# 验证失败，还原
+		zg_write_node "$ZG_MCA_PATH" "$ZG_MCA_START" 2>/dev/null
+		return 1
 	else
 		start_node="$ZG_MCA_PATH"
 		start_val="$val"
 		log_log2=1
 		start_ok=1
+		return 0
 	fi
-	return 0
 }
 
-# 有 preferred_switch 时优先写该节点；MCA 机型仍优先 MCA
+# preferred_switch：写入后必须真断电验证，失败则清除 preferred
 zg_pref_write() {
 	local mode="$1"
 	local val
 	zg_load_device_profile
 	[ -n "$ZG_PREF_PATH" ] && [ -f "$ZG_PREF_PATH" ] || return 1
+	# 拉黑的 preferred 直接跳过
+	zg_is_bad_switch "$ZG_PREF_PATH" && return 1
 	if [ "$mode" = "stop" ]; then
 		val="$ZG_PREF_STOP"
 		[ -n "$val" ] || return 1
-		zg_write_node "$ZG_PREF_PATH" "$val"
-		stop_nodes="$ZG_PREF_PATH=$val (preferred)"
-		log_log=1
-		stop_ok=1
+		zg_write_node "$ZG_PREF_PATH" "$val" || return 1
+		if zg_verify_stopped 5; then
+			stop_nodes="$ZG_PREF_PATH=$val (preferred)"
+			log_log=1
+			stop_ok=1
+			return 0
+		fi
+		# preferred 失效：还原 + 清除 + 拉黑
+		zg_write_node "$ZG_PREF_PATH" "$ZG_PREF_START" 2>/dev/null
+		zg_clear_preferred_switch
+		zg_blacklist_switch "$ZG_PREF_PATH"
+		zg_log warn "preferred 节点验证失败已清除 $ZG_PREF_PATH"
+		return 1
 	else
 		val="$ZG_PREF_START"
 		[ -n "$val" ] || return 1
-		zg_write_node "$ZG_PREF_PATH" "$val"
+		zg_write_node "$ZG_PREF_PATH" "$val" || return 1
 		start_node="$ZG_PREF_PATH"
 		start_val="$val"
 		log_log2=1
 		start_ok=1
+		return 0
 	fi
-	return 0
+}
+
+# 按列表写停充/恢复，逐个尝试并真断电验证
+zg_write_switch_list() {
+	local mode="$1"
+	local list="$2"
+	local i route val orig
+
+	# 限流节点排最后
+	local normal_list="" limit_list=""
+	for i in $list; do
+		route="$(echo "$i" | sed -n 's/,start=.*//g;$p')"
+		if zg_is_current_limit_node "$route"; then
+			limit_list="$limit_list $i"
+		else
+			normal_list="$normal_list $i"
+		fi
+	done
+	list="$normal_list $limit_list"
+
+	for i in $list; do
+		route="$(echo "$i" | sed -n 's/,start=.*//g;$p')"
+		[ -f "$route" ] || continue
+		zg_is_bad_switch "$route" && continue
+
+		if [ "$mode" = "stop" ]; then
+			val="$(echo "$i" | sed -n 's/.*,stop=//g;s/_/ /g;$p')"
+			# 限流节点保存原值
+			if zg_is_current_limit_node "$route"; then
+				orig="$(cat "$route" 2>/dev/null)"
+				[ -n "$orig" ] && zg_save_orig_value "$route" "$orig"
+			fi
+			zg_write_node "$route" "$val" || continue
+			# 真断电验证
+			if zg_verify_stopped 5; then
+				stop_nodes="$route=$val"
+				log_log=1
+				stop_ok=1
+				# 只有真断电的节点才写入 preferred
+				local sv
+				sv="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
+				zg_set_preferred_switch "$route" "$sv" "$val"
+				return 0
+			else
+				# 假节点：还原 + 拉黑
+				if zg_is_current_limit_node "$route"; then
+					orig="$(zg_get_orig_value "$route")"
+					[ -n "$orig" ] && echo "$orig" > "$route" 2>/dev/null
+				else
+					local sv
+					sv="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
+					echo "$sv" > "$route" 2>/dev/null
+				fi
+				zg_blacklist_switch "$route"
+				zg_log warn "假节点（写入成功但未断电）已拉黑 $route"
+			fi
+		else
+			# 恢复模式：写回 start 值（限流节点用保存的原值）
+			if zg_is_current_limit_node "$route"; then
+				val="$(zg_get_orig_value "$route")"
+				[ -z "$val" ] && val="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
+			else
+				val="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
+			fi
+			zg_write_node "$route" "$val" || continue
+			start_node="$route"
+			start_val="$val"
+			log_log2=1
+			start_ok=1
+			return 0
+		fi
+	done
+	return 1
 }
 
 zg_power_stop() {
@@ -296,7 +459,10 @@ zg_restore_switches_from_list() {
 	for i in $(cat "$LIST_SWITCH"); do
 		route="$(echo "$i" | sed -n 's/,start=.*//g;$p')"
 		if [ -f "$route" ]; then
-			start_val="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
+			if zg_is_current_limit_node "$route"; then
+				start_val="$(zg_get_orig_value "$route")"
+			fi
+			[ -z "$start_val" ] && start_val="$(echo "$i" | sed -n 's/.*,start=//g;s/,stop=.*//g;s/_/ /g;$p')"
 			echo "$start_val" > "$route" 2>/dev/null
 		fi
 	done

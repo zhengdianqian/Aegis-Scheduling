@@ -26,11 +26,13 @@ for policy in /sys/devices/system/cpu/cpufreq/policy*; do
     fi
 done
 
-# 2) 充电阈值：把停充节点还原为「允许充电」（先守护进程自还原，失败再走脚本表）
+# 2) 充电阈值：先终止守护进程，再还原节点（避免守护在 restore 后再次停充）
+pkill -f charge_guardd 2>/dev/null
+sleep 0.5
+# 守护进程自还原，失败再走脚本兜底
 if [ -x "$MODDIR/charge_guardd" ]; then
     "$MODDIR/charge_guardd" "$MODDIR" restore 2>/dev/null
 fi
-pkill -f charge_guardd 2>/dev/null
 # 强制恢复充电控制节点（防止残留）
 for node in /sys/class/power_supply/battery/charge_control_limit /sys/class/power_supply/battery/input_suspend; do
     if [ -w "$node" ]; then
