@@ -1,5 +1,7 @@
 /*
- * charge_guard.c — Aegis 充电阈值守护 v1.4
+ * charge_guard.c — Aegis 充电阈值守护 v1.5
+ * v1.5 修复：sched_skip 只查不删导致"跳过本次预约"变成永久跳过；现按文件 mtime
+ *         与上一次目标时刻比对，上一轮目标过后自动清除，恢复"只跳过一次"语义
  * v1.4 修复：滞回被预约分支击穿、预约抖动(锁存)、低温误判、restore 参数、日志膨胀、
  *         电流符号标定、拉黑多次确认、探测残留还原
  * 编译: aarch64-linux-android21-clang -static -O2 -o charge_guardd charge_guard.c
@@ -815,7 +817,6 @@ static int sched_should_stop(int level, int powered, const Config *cfg,
     *finish = 0;
 
     if (!cfg->sched_on) return 0;
-    if (file_exists(SCHED_SKIP)) return 0; /* 本次已跳过 */
 
     time_t now = time(NULL);
     time_t target_time = parse_sched_time(cfg->sched_time);
@@ -828,6 +829,20 @@ static int sched_should_stop(int level, int powered, const Config *cfg,
     *deadline = target_time;
     *resume = start_time;
     *finish = target_time;
+
+    /* v1.5：跳过只对一轮目标生效。parse_sched_time 恒返回未来时间，
+       上一次目标时刻 = target_time - 86400；skip 文件 mtime 早于它，
+       说明被跳过的那一轮已结束，自动清除，避免永久跳过 */
+    if (file_exists(SCHED_SKIP)) {
+        struct stat st;
+        if (stat(SCHED_SKIP, &st) == 0 && st.st_mtime < target_time - 86400) {
+            rm_file(SCHED_SKIP);
+            log_msg("INFO", "上一轮预约已结束，自动清除跳过标记 sched_skip");
+        } else {
+            *state = 6; /* 已跳过 */
+            return 0;
+        }
+    }
 
     /* 窗口外：不干预 */
     if (now < window_start || now > target_time + 3600) {
@@ -909,7 +924,7 @@ static int restore_all_nodes(void) {
 /* ── 主逻辑 ── */
 int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) {
-        printf("charge_guardd v1.4 (Aegis)\n");
+        printf("charge_guardd v1.5 (Aegis)\n");
         return 0;
     }
     mkdir(DATADIR, 0755);
@@ -940,7 +955,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    log_msg("INFO", "charge_guard v1.4 启动");
+    log_msg("INFO", "charge_guard v1.5 启动");
 
     /* 启动时状态一致性检查：节点是停充状态但 flag 不存在，则恢复节点 */
     if (!file_exists(POWER_SWITCH_FLAG)) restore_all_nodes();
