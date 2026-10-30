@@ -192,7 +192,7 @@ jobs:
       contents: write # 创建 Release 需要写权限
 
     steps:
-      # 1. 校验标签版本与 Cargo.toml 一致，防止发布错误版本
+      # 1. 校验标签版本与 Cargo.toml / module.prop 一致，防止发布错误版本
       - name: Verify version tag
         shell: bash
         env:
@@ -200,14 +200,16 @@ jobs:
           CARGO_VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          # 同时兼容 v2.0.2 与 yumi-v2.0.2 两种标签写法
+          MODULE_VERSION=$(grep -E '^version=' module/module.prop | head -n1 | cut -d= -f2 | tr -d ' \r')
+          # 同时兼容 v2.0.2 / yumi-v2.0.2（Cargo 版本）与 V4.3（模块版本）三种标签写法
           tag_version="${TAG#yumi-}"
           tag_version="${tag_version#v}"
-          if [ "$tag_version" != "$CARGO_VERSION" ]; then
-            echo "::error title=版本标签不匹配::标签 ${TAG}（版本 ${tag_version}）与 Cargo.toml 中的版本 ${CARGO_VERSION} 不一致，拒绝发布正式版。"
+          tag_version="${tag_version#V}"
+          if [ "$tag_version" != "$CARGO_VERSION" ] && [ "$tag_version" != "$MODULE_VERSION" ]; then
+            echo "::error title=版本标签不匹配::标签 ${TAG}（版本 ${tag_version}）与 Cargo.toml ${CARGO_VERSION} / module.prop ${MODULE_VERSION} 均不一致，拒绝发布正式版。"
             exit 1
           fi
-          echo "版本校验通过：${TAG} -> ${CARGO_VERSION}"
+          echo "版本校验通过：${TAG} -> Cargo ${CARGO_VERSION} / module ${MODULE_VERSION}"
 
       # 2. 下载构建产物
       - name: Download build artifact
@@ -221,7 +223,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: Yumi ${{ github.ref_name }}
+          name: Aegis ${{ github.ref_name }}
           prerelease: false
           make_latest: true
           generate_release_notes: true
