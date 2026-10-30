@@ -112,6 +112,13 @@ jobs:
           echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           cargo install cargo-ndk
 
+      # 7.5 从源码编译充电守护 charge_guardd（NDK bionic 静态链接，确保发布包与 charge_guard.c 严格一致）
+      - name: Compile charge_guardd
+        run: |
+          CGCC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+          "$CGCC" -static -O2 -o module/charge_guardd module/charge_guard/charge_guard.c
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h module/charge_guardd | grep -E "Class|Machine"
+
       # 8. 运行 xtask 构建脚本
       - name: Run xtask build
         run: cargo xtask build

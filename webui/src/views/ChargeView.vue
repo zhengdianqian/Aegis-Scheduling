@@ -138,7 +138,7 @@ function renderStatus(s: Kv) {
   schedText.value =
     st === 1 ? `⏳ 已按住 ${hl(s.level || '--')}% · 预计 ${hl(fmtClock(s.sched_resume || '0'))} 开始充电 · 约 ${hl(fmtClock(s.sched_finish || '0'))} 充完（目标 ${hl(dl)}）`
     : st === 2 ? `⚡ 已放行，预计 ${hl(fmtClock(s.sched_finish || '0'))} 充完（目标 ${hl(dl)}）`
-    : st === 3 ? '🔋 电量低于保底值，先正常充电'
+    : st === 3 ? '🔋 电量低于保底值，补电至保底+10%'
     : st === 5 ? '✅ 已到目标电量'
     : st === 6 ? '⏭ 本次预约已跳过，明天照常生效'
     : `💤 待命：未插电，或距目标时刻（${dl}）较远`;

@@ -1,5 +1,8 @@
 /*
- * charge_guard.c — Aegis 充电阈值守护 v1.5
+ * charge_guard.c — Aegis 充电阈值守护 v1.6
+ * v1.6 修复：充满即停不再受恢复电量(power_start)限制（99%插电即补电到100%）；
+ *         预约保底电量补电改为 +10% 滞回锁存（低于保底一路充到 保底+10% 才停，
+ *         修复 20%停/19%充 的抖动循环），补电优先于预约按住
  * v1.5 修复：sched_skip 只查不删导致"跳过本次预约"变成永久跳过；现按文件 mtime
  *         与上一次目标时刻比对，上一轮目标过后自动清除，恢复"只跳过一次"语义
  * v1.4 修复：滞回被预约分支击穿、预约抖动(锁存)、低温误判、restore 参数、日志膨胀、
@@ -44,6 +47,7 @@
 #define SCHED_SKIP DATADIR "/sched_skip"
 #define SCHED_HOLD DATADIR "/sched_hold"     /* 本次停充由预约按住造成 */
 #define SCHED_LATCH DATADIR "/sched_latch"   /* 预约放行锁存(存 deadline) */
+#define SCHED_FLOOR_BOOST DATADIR "/sched_floor_boost" /* 保底补电锁存(充到 floor+10 才停) */
 #define CUR_SIGN_FILE DATADIR "/cur_sign"    /* 充电电流符号标定 */
 #define STRIKE_FILE DATADIR "/strikes"       /* 验证失败计数 */
 #define DEBUG_FLAG DATADIR "/debug"          /* 存在则输出 DEBUG 日志 */
@@ -816,7 +820,10 @@ static int sched_should_stop(int level, int powered, const Config *cfg,
     *resume = 0;
     *finish = 0;
 
-    if (!cfg->sched_on) return 0;
+    if (!cfg->sched_on) {
+        rm_file(SCHED_FLOOR_BOOST);
+        return 0;
+    }
 
     time_t now = time(NULL);
     time_t target_time = parse_sched_time(cfg->sched_time);
@@ -844,8 +851,9 @@ static int sched_should_stop(int level, int powered, const Config *cfg,
         }
     }
 
-    /* 窗口外：不干预 */
+    /* 窗口外：不干预，同时清掉上一轮遗留的保底补电锁存 */
     if (now < window_start || now > target_time + 3600) {
+        rm_file(SCHED_FLOOR_BOOST);
         *state = 0;
         return 0;
     }
@@ -856,10 +864,27 @@ static int sched_should_stop(int level, int powered, const Config *cfg,
         return 1;
     }
 
-    /* 保底电量：直接充 */
-    if (level < cfg->sched_floor) {
-        *state = 3;
-        return 0;
+    /* v1.6 保底电量补电（+10% 滞回）：
+       电量低于保底 → 写入补电锁存，一路充到 保底+10% 才允许停；
+       修复旧版充到保底就停、掉 1% 又充的抖动（20%停/19%充循环）。
+       补电优先于预约按住，无论距预约放行时刻还有多久。 */
+    if (cfg->sched_floor > 0) {
+        int in_boost = file_exists(SCHED_FLOOR_BOOST);
+        if (!in_boost && level < cfg->sched_floor) {
+            touch_file(SCHED_FLOOR_BOOST);
+            in_boost = 1;
+            log_msg("INFO", "预约充电：电量%d%% 低于保底%d%%，补电至%d%%",
+                    level, cfg->sched_floor, cfg->sched_floor + 10);
+        }
+        if (in_boost) {
+            if (level < cfg->sched_floor + 10 && level < 100) {
+                *state = 3; /* 保底补电中，持续直充 */
+                return 0;
+            }
+            /* 已补到保底+10%：清除锁存，交回预约按住逻辑 */
+            rm_file(SCHED_FLOOR_BOOST);
+            log_msg("INFO", "预约充电：保底补电完成（%d%%），恢复预约按住", level);
+        }
     }
 
     /* 到点放行，或已锁存放行 */
@@ -924,7 +949,7 @@ static int restore_all_nodes(void) {
 /* ── 主逻辑 ── */
 int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) {
-        printf("charge_guardd v1.5 (Aegis)\n");
+        printf("charge_guardd v1.6 (Aegis)\n");
         return 0;
     }
     mkdir(DATADIR, 0755);
@@ -936,6 +961,7 @@ int main(int argc, char *argv[]) {
         int n = restore_all_nodes();
         rm_file(POWER_SWITCH_FLAG); rm_file(BATTERY_SWITCH_FLAG); rm_file(TEMP_SWITCH_FLAG);
         rm_file(LEAK_COUNT_FILE); rm_file(IS_POWERED_FLAG); rm_file(SCHED_HOLD); rm_file(SCHED_LATCH);
+        rm_file(SCHED_FLOOR_BOOST);
         log_msg("INFO", "restore：已还原 %d 个节点", n);
         printf("restored %d node(s)\n", n);
         return 0;
@@ -955,7 +981,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    log_msg("INFO", "charge_guard v1.5 启动");
+    log_msg("INFO", "charge_guard v1.6 启动");
 
     /* 启动时状态一致性检查：节点是停充状态但 flag 不存在，则恢复节点 */
     if (!file_exists(POWER_SWITCH_FLAG)) restore_all_nodes();
@@ -1199,14 +1225,14 @@ int main(int argc, char *argv[]) {
                 battery_ready = 0;
             }
 
-            /* charge_full=1 时：只有电量<100且<=power_start才恢复，避免100%反复 */
+            /* v1.6：charge_full=1 时充满即停模式完全不受 power_start 约束，
+               只要掉到 99% 就立即补电回 100%（浮充），避免插电 99% 一直停充不进电 */
             if (cfg.charge_full && reason_battery && !reason_temp) {
                 if (level >= 100) {
                     battery_ready = 0;  /* 100%时保持停充，不恢复 */
-                } else if (level <= cfg.power_start) {
-                    battery_ready = 1;  /* 电量低于恢复阈值才恢复 */
+                } else {
+                    battery_ready = 1;  /* 充满即停：低于100%立即恢复补电，忽略 power_start */
                 }
-                /* 100 > level > power_start 时保持 battery_ready=0，不恢复 */
             }
 
             /* 预约充电：按住状态时不恢复 */
