@@ -2,14 +2,15 @@ name: Build Yumi
 
 # 触发条件与发布策略：
 #   - push 到 main 分支 / 手动运行(main)：构建通过后自动发布「预发布版」(Pre-release)；
-#   - push 版本标签（v2.0.2 或 yumi-v2.0.2）：构建通过后发布「正式版」(Release)，
-#     且标签版本必须与 Cargo.toml 中的 version 完全一致，否则拒绝发布；
+#   - push 版本标签（v2.0.2 / V4.3 / yumi-v2.0.2）：构建通过后发布「正式版」(Release)，
+#     且标签版本必须与 Cargo.toml 或 module.prop 中的 version 完全一致，否则拒绝发布；
 #   - pull_request：只构建并上传临时产物，不发布任何 Release。
 on:
   push:
     branches: [ "main" ]
     tags:
       - 'v*'
+      - 'V*'
       - 'yumi-v*'
   pull_request:
     branches: [ "main" ]
