@@ -193,6 +193,10 @@ jobs:
       contents: write # 创建 Release 需要写权限
 
     steps:
+      # 0. 拉取代码（版本校验需要读取 module/module.prop）
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       # 1. 校验标签版本与 Cargo.toml / module.prop 一致，防止发布错误版本
       - name: Verify version tag
         shell: bash
