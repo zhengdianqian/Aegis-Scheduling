@@ -5,10 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fs_extra::{dir, file};
-use serde::Deserialize;
 use xshell::{cmd, Shell};
 use zip::{write::FileOptions, CompressionMethod};
 
@@ -28,14 +27,21 @@ enum Commands {
     Build,
 }
 
-#[derive(Deserialize)]
-struct Package {
-    version: String,
-}
-
-#[derive(Deserialize)]
-struct CargoConfig {
-    package: Package,
+/// 对外版本号的唯一真值是 module/module.prop 的 version=（如 4.6）。
+/// Cargo.toml 的 version 只是合法 semver（4.6.0），不参与产物命名，
+/// 避免同一个版本出现 4.6 / 4.6.0 两种写法。
+fn module_version() -> Result<String> {
+    let content = fs::read_to_string("module/module.prop")
+        .context("读取 module/module.prop 失败，无法确定版本号")?;
+    for line in content.lines() {
+        if let Some(value) = line.trim().strip_prefix("version=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Ok(value.to_string());
+            }
+        }
+    }
+    anyhow::bail!("module/module.prop 缺少 version=")
 }
 
 fn main() -> Result<()> {
@@ -62,10 +68,9 @@ fn get_date() -> String {
 
 fn build(sh: &Shell) -> Result<()> {
     let temp_dir = temp_dir();
-    
-    // 读取 Cargo.toml (注意：因为通过 `cargo xtask` 运行，工作目录是项目根目录)
-    let toml_content = fs::read_to_string("Cargo.toml")?;
-    let data: CargoConfig = toml::from_str(&toml_content)?;
+
+    // 版本号取自 module/module.prop（与 CI、update.json、README 同一个真值）
+    let version = module_version()?;
 
     // 1. 清理并重建临时目录
     let _ = fs::remove_dir_all(&temp_dir);
@@ -112,7 +117,7 @@ fn build(sh: &Shell) -> Result<()> {
     
     let zip_filename = format!(
         "aegis-{}-{}-{}.zip",
-        data.package.version,
+        version,
         cal_git_code(sh)?,
         get_date()
     );
@@ -135,7 +140,12 @@ fn temp_dir() -> PathBuf {
 }
 
 fn aarch64_bin_path() -> PathBuf {
-    Path::new("target")
+    // 尊重 CARGO_TARGET_DIR：仓库路径含非 ASCII 字符时，MinGW dlltool 无法
+    // 打开 target 里的临时 .def 文件，需要把构建输出指到纯 ASCII 目录。
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
+    target_dir
         .join("aarch64-linux-android")
         .join("release")
         .join("Aegis")

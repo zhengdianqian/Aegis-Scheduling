@@ -1,5 +1,9 @@
 /*
- * charge_guard.c — Aegis 充电阈值守护 v1.6
+ * charge_guard.c — Aegis 充电阈值守护 v1.7
+ * v1.7 修复：充满即停增加「本次插电锁存」——100%停充后靠电池自然放电掉到
+ *         99%时不再自动补电；只有检测到物理拔电（power_supply online/present
+ *         归零）才解除锁存，下次插电恢复正常充电。彻底消除"睡觉没拔电却
+ *         99%→100% 反复浮充"的整夜充电循环。
  * v1.6 修复：充满即停不再受恢复电量(power_start)限制（99%插电即补电到100%）；
  *         预约保底电量补电改为 +10% 滞回锁存（低于保底一路充到 保底+10% 才停，
  *         修复 20%停/19%充 的抖动循环），补电优先于预约按住
@@ -48,6 +52,7 @@
 #define SCHED_HOLD DATADIR "/sched_hold"     /* 本次停充由预约按住造成 */
 #define SCHED_LATCH DATADIR "/sched_latch"   /* 预约放行锁存(存 deadline) */
 #define SCHED_FLOOR_BOOST DATADIR "/sched_floor_boost" /* 保底补电锁存(充到 floor+10 才停) */
+#define FULL_LATCH DATADIR "/full_latch"     /* 充满即停本次插电锁存(物理拔电才复位) */
 #define CUR_SIGN_FILE DATADIR "/cur_sign"    /* 充电电流符号标定 */
 #define STRIKE_FILE DATADIR "/strikes"       /* 验证失败计数 */
 #define DEBUG_FLAG DATADIR "/debug"          /* 存在则输出 DEBUG 日志 */
@@ -60,6 +65,7 @@
 /* ── 配置 ── */
 typedef struct {
     int charge_full;
+    int charge_full_latch; /* 充满即停后本次插电不再补电，物理拔电才复位 */
     int power_reset;
     int power_stop;
     int power_start;
@@ -385,6 +391,7 @@ static int is_current_limit_node(const char *path) {
 static void read_config(Config *cfg) {
     /* 默认值 */
     cfg->charge_full = 0;
+    cfg->charge_full_latch = 1;
     cfg->power_reset = 0;
     cfg->power_stop = 80;
     cfg->power_start = 70;
@@ -406,6 +413,7 @@ static void read_config(Config *cfg) {
         char key[64], val[64];
         if (sscanf(line, "%63[^=]=%63s", key, val) == 2) {
             if (strcmp(key, "charge_full") == 0) cfg->charge_full = atoi(val);
+            else if (strcmp(key, "charge_full_latch") == 0) cfg->charge_full_latch = atoi(val);
             else if (strcmp(key, "power_reset") == 0) cfg->power_reset = atoi(val);
             else if (strcmp(key, "power_stop") == 0) cfg->power_stop = atoi(val);
             else if (strcmp(key, "power_start") == 0) cfg->power_start = atoi(val);
@@ -433,6 +441,7 @@ static void read_config(Config *cfg) {
     }
     if (cfg->power_stop_time < 1) cfg->power_stop_time = 1;
     if (cfg->power_stop_time > 120) cfg->power_stop_time = 120;
+    cfg->charge_full_latch = cfg->charge_full_latch ? 1 : 0;
     if (cfg->temperature_switch_stop < 25) cfg->temperature_switch_stop = 25;
     if (cfg->temperature_switch_stop > 70) cfg->temperature_switch_stop = 70;
     if (cfg->temperature_switch_start < 25) cfg->temperature_switch_start = 25;
@@ -464,6 +473,50 @@ static int read_battery(int *level, int *temp, char *status, size_t st_size, int
     *current = read_int_file(SYSROOT "/sys/class/power_supply/battery/current_now", 0);
 
     return 0;
+}
+
+/* ── 外接电源存在性检测 ──
+   与电池 status 无关：我们主动停充后，battery/status 会变成 Not charging/
+   Discharging，不能再用它判断"有没有插着电"。改为读 USB/AC/Wireless 等
+   非电池 power_supply 的 online（无 online 再看 present）。
+   返回 1=检测到外接电源，0=确认无外接电源（可判定物理拔电），
+   -1=本机没有可用供电节点，无法判断。 */
+static int external_power_present(void) {
+    DIR *dir = opendir(SYSROOT "/sys/class/power_supply");
+    if (!dir) return -1;
+
+    int found = 0, present = 0;
+    char path[MAX_PATH], type[64];
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        if (strstr(ent->d_name, "battery") || strcmp(ent->d_name, "bms") == 0) continue;
+
+        snprintf(path, sizeof(path), SYSROOT "/sys/class/power_supply/%s/type", ent->d_name);
+        type[0] = '\0';
+        if (read_file(path, type, sizeof(type)) == 0 && strcmp(type, "Battery") == 0) continue;
+
+        /* online 优先：它反映 VBUS 是否在位，停充后仍保持 1 */
+        snprintf(path, sizeof(path), SYSROOT "/sys/class/power_supply/%s/online", ent->d_name);
+        int online = read_int_file(path, -1);
+        if (online >= 0) {
+            found = 1;
+            if (online > 0) present = 1;
+            continue;
+        }
+
+        /* 没有 online 的节点退化为 present（部分无线充/扩展坞） */
+        snprintf(path, sizeof(path), SYSROOT "/sys/class/power_supply/%s/present", ent->d_name);
+        int pr = read_int_file(path, -1);
+        if (pr >= 0) {
+            found = 1;
+            if (pr > 0) present = 1;
+        }
+    }
+    closedir(dir);
+
+    if (present) return 1;
+    return found ? 0 : -1;
 }
 
 /* ── 节点扫描（list_switch 的 C 实现） ── */
@@ -902,7 +955,7 @@ static int sched_should_stop(int level, int powered, const Config *cfg,
 static void write_status_kv(int level, int temp, int powered, int stopped,
                             int reason_battery, int reason_temp, int off,
                             const char *bat_status, int verified, int leak,
-                            const char *node,
+                            const char *node, int full_latch,
                             int sched_on, int sched_state, long sched_deadline,
                             long sched_resume, long sched_finish, int sched_held) {
     static char last_body[1024];
@@ -910,11 +963,12 @@ static void write_status_kv(int level, int temp, int powered, int stopped,
     char body[1024];
     snprintf(body, sizeof(body),
              "level=%d\ntemp=%d\npowered=%d\nstopped=%d\nreason_battery=%d\nreason_temp=%d\n"
-             "off=%d\nbat_status=%s\nverified=%d\nleak=%d\nnode=%s\nsched_on=%d\nsched_state=%d\n"
+             "off=%d\nbat_status=%s\nverified=%d\nleak=%d\nnode=%s\nfull_latch=%d\n"
+             "sched_on=%d\nsched_state=%d\n"
              "sched_deadline=%ld\nsched_resume=%ld\nsched_finish=%ld\nsched_held=%d\n",
              level, temp, powered, stopped, reason_battery, reason_temp, off, bat_status,
-             verified, leak, node, sched_on, sched_state, sched_deadline, sched_resume,
-             sched_finish, sched_held);
+             verified, leak, node, full_latch, sched_on, sched_state, sched_deadline,
+             sched_resume, sched_finish, sched_held);
     time_t now = time(NULL);
     if (strcmp(body, last_body) == 0 && (now - last_write) < 60) return;
 
@@ -949,7 +1003,7 @@ static int restore_all_nodes(void) {
 /* ── 主逻辑 ── */
 int main(int argc, char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "-v") == 0) {
-        printf("charge_guardd v1.6 (Aegis)\n");
+        printf("charge_guardd v1.7 (Aegis)\n");
         return 0;
     }
     mkdir(DATADIR, 0755);
@@ -961,7 +1015,7 @@ int main(int argc, char *argv[]) {
         int n = restore_all_nodes();
         rm_file(POWER_SWITCH_FLAG); rm_file(BATTERY_SWITCH_FLAG); rm_file(TEMP_SWITCH_FLAG);
         rm_file(LEAK_COUNT_FILE); rm_file(IS_POWERED_FLAG); rm_file(SCHED_HOLD); rm_file(SCHED_LATCH);
-        rm_file(SCHED_FLOOR_BOOST);
+        rm_file(SCHED_FLOOR_BOOST); rm_file(FULL_LATCH);
         log_msg("INFO", "restore：已还原 %d 个节点", n);
         printf("restored %d node(s)\n", n);
         return 0;
@@ -981,7 +1035,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    log_msg("INFO", "charge_guard v1.6 启动");
+    log_msg("INFO", "charge_guard v1.7 启动");
 
     /* 启动时状态一致性检查：节点是停充状态但 flag 不存在，则恢复节点 */
     if (!file_exists(POWER_SWITCH_FLAG)) restore_all_nodes();
@@ -1001,13 +1055,14 @@ int main(int argc, char *argv[]) {
                 rm_file(BATTERY_SWITCH_FLAG);
                 rm_file(TEMP_SWITCH_FLAG);
                 rm_file(LEAK_COUNT_FILE);
+                rm_file(FULL_LATCH);   /* v1.7：总开关关闭，本次插电锁存一并清除 */
                 log_msg("INFO", "总开关关闭，恢复充电 [%s <- %s]", used, val);
             }
             /* M5: off 状态也写 status.kv，让 WebUI 显示 off=1 */
             int level, temp, current;
             char status[64];
             if (read_battery(&level, &temp, status, sizeof(status), &current) == 0) {
-                write_status_kv(level, temp, 0, 0, 0, 0, 1, status, 0, 0, "",
+                write_status_kv(level, temp, 0, 0, 0, 0, 1, status, 0, 0, "", 0,
                                 0, 0, 0, 0, 0, 0);
             }
             sleep(3);
@@ -1038,6 +1093,65 @@ int main(int argc, char *argv[]) {
         int reason_battery = file_exists(BATTERY_SWITCH_FLAG);
         int reason_temp = file_exists(TEMP_SWITCH_FLAG);
         int verified = 0, leak = 0;
+
+        /* ── 充满即停：本次插电锁存（v1.7）──
+           100% 停充后电池自然放电会掉回 99%，v1.6 会立刻补电，整夜反复浮充。
+           FULL_LATCH 记住"本次插电已经充满并停充"，只要外接电源仍在就绝不因
+           电量回落而恢复充电；只有确认物理拔电才解除，下次插电恢复正常充电。
+           判断插拔只看 power_supply 的 online/present，不看 battery status
+           （我们停充后 status 本身就是 Not charging/Discharging）。 */
+        int ext_power = external_power_present();
+        if (ext_power < 0) {
+            /* 没有可用供电节点（极少见）：退化用连续 3 拍 Discharging 判拔电。
+               配合下面的 100%<->99% 不补电逻辑，即使误判也不会造成反复浮充。 */
+            static int unplug_hits = 0;
+            if (strcmp(status, "Discharging") == 0) {
+                if (++unplug_hits >= 3) ext_power = 0;
+            } else {
+                unplug_hits = 0;
+            }
+        }
+
+        int full_latched = file_exists(FULL_LATCH);
+
+        if (!cfg.charge_full || !cfg.charge_full_latch) {
+            if (full_latched) {
+                rm_file(FULL_LATCH);
+                full_latched = 0;
+                log_msg("INFO", "充满即停锁存已关闭，清除本次插电锁存");
+            }
+        } else if (full_latched && ext_power == 0) {
+            /* 物理拔电：本次插电结束，清锁存并还原节点，下次插电照常充电 */
+            rm_file(FULL_LATCH);
+            full_latched = 0;
+            log_msg("INFO", "检测到物理拔电，充满即停锁存解除");
+            if (stopped && reason_battery && !reason_temp) {
+                char used[MAX_LINE], val[MAX_VAL];
+                if (do_power_start(used, sizeof(used), val, sizeof(val))) {
+                    rm_file(POWER_SWITCH_FLAG);
+                    rm_file(BATTERY_SWITCH_FLAG);
+                    rm_file(SCHED_HOLD);
+                    rm_file(LEAK_COUNT_FILE);
+                    stopped = 0;
+                    reason_battery = 0;
+                    log_msg("INFO", "拔电解锁：还原充电节点 [%s <- %s]", used, val);
+                }
+            }
+        } else if (full_latched && level <= cfg.power_start) {
+            /* 兜底安全阀：锁存期间电量已跌到恢复线（默认 70%+）以下，
+               说明跨了多次插拔或长时间未充电，解除锁存避免永久不充电。 */
+            rm_file(FULL_LATCH);
+            full_latched = 0;
+            log_msg("INFO", "电量%d 低于恢复线，解除充满即停锁存", level);
+        }
+
+        /* 老版本升级 / 守护重启：停充原因仍是"充满"且电量仍满，补写锁存 */
+        if (!full_latched && stopped && cfg.charge_full && cfg.charge_full_latch &&
+            reason_battery && !reason_temp && level >= 100) {
+            touch_file(FULL_LATCH);
+            full_latched = 1;
+            log_msg("INFO", "补写充满即停锁存（本次插电已充满）");
+        }
 
         /* 检查是否真断电 */
         if (stopped) {
@@ -1136,6 +1250,11 @@ int main(int argc, char *argv[]) {
                     touch_file(POWER_SWITCH_FLAG);
                     if (stop_by_battery) touch_file(BATTERY_SWITCH_FLAG);
                     if (stop_by_temp) touch_file(TEMP_SWITCH_FLAG);
+                    /* v1.7：充满即停停充成功即打上本次插电锁存（含低电流涓流判定） */
+                    if (stop_by_battery && cfg.charge_full && cfg.charge_full_latch) {
+                        touch_file(FULL_LATCH);
+                        full_latched = 1;
+                    }
                     log_msg("INFO", "电量%d 停止充电 [%s]", level, used);
                     no_node_logged = 0;
                 } else if (!no_node_logged) {
@@ -1180,7 +1299,10 @@ int main(int argc, char *argv[]) {
             /* 只处理“由预约按住造成”的停充（v1.3 对所有停充都进这里，击穿了滞回）。
                预约不再按住：普通阈值也不需要停充才恢复；否则交还给普通恢复判定。 */
             int normal_need_stop = 0;
-            if (cfg.charge_full) {
+            if (file_exists(FULL_LATCH)) {
+                /* v1.7：本次插电已经充满并停充，预约放行也不回充 */
+                normal_need_stop = 1;
+            } else if (cfg.charge_full) {
                 if (level >= 100) normal_need_stop = 1;
             } else if (level >= cfg.power_stop) {
                 normal_need_stop = 1;
@@ -1210,6 +1332,7 @@ int main(int argc, char *argv[]) {
         stopped = file_exists(POWER_SWITCH_FLAG);
         reason_battery = file_exists(BATTERY_SWITCH_FLAG);
         reason_temp = file_exists(TEMP_SWITCH_FLAG);
+        full_latched = file_exists(FULL_LATCH);
 
         /* 更新 sched_held 状态（用于 status.kv） */
         if (stopped && sched_state == 1) sched_held = 1;
@@ -1225,14 +1348,22 @@ int main(int argc, char *argv[]) {
                 battery_ready = 0;
             }
 
-            /* v1.6：charge_full=1 时充满即停模式完全不受 power_start 约束，
-               只要掉到 99% 就立即补电回 100%（浮充），避免插电 99% 一直停充不进电 */
+            /* v1.7：充满即停只负责"本次插电充到 100% 并停充"。停充后的补电
+               一律交由 FULL_LATCH 决定：本次插电没拔过电就绝不回充（消除
+               100%→99%→100% 整夜浮充）；只有 charge_full_latch=0 的旧行为
+               才会在掉到 99% 时立即补电。 */
             if (cfg.charge_full && reason_battery && !reason_temp) {
-                if (level >= 100) {
-                    battery_ready = 0;  /* 100%时保持停充，不恢复 */
+                if (!cfg.charge_full_latch && level < 100) {
+                    battery_ready = 1;
                 } else {
-                    battery_ready = 1;  /* 充满即停：低于100%立即恢复补电，忽略 power_start */
+                    battery_ready = 0;
                 }
+            }
+
+            /* 本次插电已充满：连温控恢复也保持停充（满电不需要再充） */
+            if (full_latched) {
+                battery_ready = 0;
+                temp_ready = 0;
             }
 
             /* 预约充电：按住状态时不恢复 */
@@ -1287,6 +1418,7 @@ int main(int argc, char *argv[]) {
                         file_exists(OFF_FLAG) ? 1 : 0,
                         status, verified, leak,
                         g_pref_valid ? g_pref_path : "",
+                        file_exists(FULL_LATCH),
                         cfg.sched_on, sched_state, (long)sched_deadline,
                         (long)sched_resume, (long)sched_finish, sched_held);
 

@@ -36,6 +36,11 @@ use scheduler::CpuScheduler;
 use crate::logger;
 use crate::common;
 
+/// 调度线程空闲超时：亮屏 100ms（与 CLG tick 同拍），
+/// 息屏 500ms（与 CPU 采样同拍，减少守护自身唤醒）。
+const IDLE_TIMEOUT_MS_SCREEN_ON: u64 = 100;
+const IDLE_TIMEOUT_MS_SCREEN_OFF: u64 = 500;
+
 /// CPU 频率策略簇信息
 pub struct CpuPolicy {
     pub id: i32,
@@ -196,7 +201,9 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             // message, so either an idle channel or a busy one can release control.
             let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
-                    let message = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    let message = match rx.recv_timeout(std::time::Duration::from_millis(
+                        if is_screen_on { IDLE_TIMEOUT_MS_SCREEN_ON } else { IDLE_TIMEOUT_MS_SCREEN_OFF }
+                    )) {
                         Ok(message) => Some(message),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -314,13 +321,21 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             if !is_screen_on {
                                 cfg.enabled = true;
                                 cfg.perf_floor = 0.0;
-                                cfg.perf_ceil = cfg.perf_ceil.min(0.40);
+                                // 息屏红线：整机只留"够用"的上限，压到 0.35
+                                //（8Gen2 中核 ≈1.3GHz、超大核 ≈1.5GHz），
+                                // 后台同步/推送不再把大核顶到高频。
+                                cfg.perf_ceil = cfg.perf_ceil.min(0.35);
                                 // 息屏红线同样约束每簇独立上限
                                 for c in cfg.cluster_ceil.iter_mut() {
-                                    *c = c.min(0.40);
+                                    *c = c.min(0.35);
                                 }
-                                cfg.smoothing_up = 0.10;
+                                // 息屏没有交互：前台空闲压频收紧，且升频不做平滑
+                                //（直接用真实负载算出的低档），降频立即沉底。
+                                cfg.background_ceiling = cfg.background_ceiling.min(0.30);
+                                cfg.smoothing_up = 0.15;
                                 cfg.smoothing_down = 1.0;
+                                cfg.slow_up_scale = cfg.slow_up_scale.min(0.15);
+                                cfg.down_fast_threshold = cfg.down_fast_threshold.max(0.30);
                             }
                             if cfg.enabled {
                                 if cpu_governor.is_active() { cpu_governor.reload_config(&cfg); }

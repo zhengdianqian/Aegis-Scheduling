@@ -64,6 +64,7 @@ const form = reactive({
   power_start: 78,
   power_stop_time: 3,
   charge_full: 1,
+  charge_full_latch: 1,
   power_reset: 0,
   temperature_switch: 0,
   temperature_switch_stop: 45,
@@ -109,10 +110,9 @@ function renderStatus(s: Kv) {
   }
   const lv = s.level || '--';
   const tmp = s.temp || '--';
-  if (s.powered !== '1') {
-    statusText.value = `${lv}% · ${tmp}°C · ${t('cg_not_charging')}`;
-  } else if (s.stopped === '1') {
-    // v1.3：stopped 标记存在但实际仍在充电 → 显示漏充告警
+  // v1.7：先判 stopped。主动停充后 battery status 会变成 Not charging/Discharging，
+  // 若先看 powered 会把"已停充"错误显示成"未充电"。
+  if (s.stopped === '1') {
     if (s.leak === '1') {
       const node = (s.node || '').split('/').pop() || '--';
       statusText.value = t('cg_leak', { node }) as string;
@@ -121,8 +121,11 @@ function renderStatus(s: Kv) {
       if (s.reason_battery === '1') reasons.push(t('cg_reason_battery') as string);
       if (s.reason_temp === '1') reasons.push(t('cg_reason_temp') as string);
       if (s.sched_held === '1') reasons.push(t('cg_reason_sched') as string);
-      statusText.value = `${t('cg_stopped')}（${reasons.join('+') || t('cg_reason_battery')}）· ${lv}% · ${tmp}°C`;
+      const latch = s.full_latch === '1' ? ` · ${t('cg_latch')}` : '';
+      statusText.value = `${t('cg_stopped')}（${reasons.join('+') || t('cg_reason_battery')}）· ${lv}% · ${tmp}°C${latch}`;
     }
+  } else if (s.powered !== '1') {
+    statusText.value = `${lv}% · ${tmp}°C · ${t('cg_not_charging')}`;
   } else {
     statusText.value = `${t('cg_charging')} · ${lv}% · ${tmp}°C`;
   }
@@ -151,6 +154,7 @@ function fillForm(c: Kv) {
     form.power_start = parseInt(c.power_start, 10) || 78;
     form.power_stop_time = parseInt(c.power_stop_time, 10) || 3;
     form.charge_full = c.charge_full === '1' ? 1 : 0;
+    form.charge_full_latch = c.charge_full_latch === '0' ? 0 : 1;
     form.power_reset = c.power_reset === '1' ? 1 : 0;
     form.temperature_switch = c.temperature_switch === '1' ? 1 : 0;
     form.temperature_switch_stop = parseInt(c.temperature_switch_stop, 10) || 45;
@@ -225,6 +229,7 @@ async function save() {
     if (!(form.power_stop_time >= 1 && form.power_stop_time <= 120)) errs.push('停充延时需在 1-120 秒');
   }
   if (form.charge_full !== 0 && form.charge_full !== 1) errs.push('充满再停需为 0 或 1');
+  if (form.charge_full_latch !== 0 && form.charge_full_latch !== 1) errs.push('插电锁存需为 0 或 1');
   if (form.power_reset !== 0 && form.power_reset !== 1) errs.push('自动拔插需为 0 或 1');
   if (form.temperature_switch) {
     if (!(form.temperature_switch_stop >= 25 && form.temperature_switch_stop <= 70 &&
@@ -248,6 +253,7 @@ async function save() {
     '# 恢复充电电量', `power_start=${form.power_start}`,
     '# 停充延时（秒）', `power_stop_time=${form.power_stop_time}`,
     '# 充满再停 1/0', `charge_full=${form.charge_full}`,
+    '# 本次插电锁存（充满后未拔电不再补电）1/0', `charge_full_latch=${form.charge_full_latch}`,
     '# 自动阻断供电 1/0', `power_reset=${form.power_reset}`, '',
     '# 高温停充 1/0', `temperature_switch=${form.temperature_switch}`,
     `temperature_switch_stop=${form.temperature_switch_stop}`,
@@ -268,6 +274,8 @@ async function save() {
     const ok =
       String(c.power_stop) === String(form.power_stop) &&
       String(c.power_start) === String(form.power_start) &&
+      String(c.charge_full) === String(form.charge_full) &&
+      String(c.charge_full_latch) === String(form.charge_full_latch) &&
       String(c.temperature_switch_stop) === String(form.temperature_switch_stop) &&
       String(c.sched_switch) === String(form.sched_switch) &&
       String(c.sched_window) === String(form.sched_window);
@@ -328,6 +336,11 @@ onUnmounted(() => clearInterval(timer));
         <van-cell center :title="t('charge_full')">
           <template #right-icon>
             <van-switch v-model="form.charge_full" :active-value="1" :inactive-value="0" />
+          </template>
+        </van-cell>
+        <van-cell v-if="form.charge_full === 1" center :title="t('charge_full_latch')" :label="t('charge_full_latch_desc')">
+          <template #right-icon>
+            <van-switch v-model="form.charge_full_latch" :active-value="1" :inactive-value="0" />
           </template>
         </van-cell>
         <van-cell center :title="t('power_reset')">

@@ -21,81 +21,81 @@ IO_Settings:
 CpuIdle:
   current_governor: ""
 
-# 省电模式：静态深度压频，上限 0.70，手势走 jump 通道起步
+# 省电模式：静态深度压频，上限 0.70，手势/前台起步走免确认通道
 powersave:
   cpu_load_governor:
-    up_threshold: 0.85
-    down_threshold: 0.55
-    smoothing_up: 0.50
+    up_threshold: 0.80
+    down_threshold: 0.50
+    smoothing_up: 0.55
     smoothing_down: 0.45
     down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
     headroom_factor: 1.05
     perf_floor: 0.0
     perf_ceil: 0.70
-    perf_init: 0.25
+    perf_init: 0.22
     up_jump_threshold: 0.35
-    slow_up_scale: 0.10
+    slow_up_scale: 0.15
     slow_down_scale: 0.55
     down_fast_threshold: 0.25
     down_fast_mult: 4.5
-    spike_jump_threshold: 0.50
-    low_load_gain: 0.40
-    interact_fg_util: 0.25
+    spike_jump_threshold: 0.42
+    low_load_gain: 0.42
+    interact_fg_util: 0.18
     # 前台进程树整体空闲时（真·静止），目标 perf 深度封顶
-    background_ceiling: 0.25
-    # 按簇序号（policy 升序）独立封顶；与 perf_ceil 一致=不额外收紧，想只压大核单独改末位
-    cluster_ceil: [0.70, 0.70, 0.70]
+    background_ceiling: 0.22
+    # 按簇序号（policy 升序）独立封顶；超大核单独压到 0.60，避开无效高频
+    cluster_ceil: [0.70, 0.70, 0.60]
 
-# 标准模式：目标紧跟真实负载，不封最高频
+# 标准模式：目标紧跟真实负载，超大核留 15% 余量不封死
 balance:
   cpu_load_governor:
-    up_threshold: 0.85
-    down_threshold: 0.50
-    smoothing_up: 0.65
+    up_threshold: 0.80
+    down_threshold: 0.48
+    smoothing_up: 0.70
     smoothing_down: 0.35
     down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
     headroom_factor: 1.05
     perf_floor: 0.0
     perf_ceil: 1.0
-    perf_init: 0.35
+    perf_init: 0.32
     up_jump_threshold: 0.35
-    slow_up_scale: 0.15
+    slow_up_scale: 0.18
     slow_down_scale: 0.55
     down_fast_threshold: 0.25
     down_fast_mult: 4.0
-    spike_jump_threshold: 0.50
-    low_load_gain: 0.55
-    interact_fg_util: 0.25
+    spike_jump_threshold: 0.42
+    low_load_gain: 0.50
+    interact_fg_util: 0.18
     # 前台进程树整体空闲时（真·静止：无动画无渲染），目标 perf 额外封顶
-    background_ceiling: 0.35
-    # 按簇序号（小核/中核/超大核）独立封顶；标准模式不限制，1.0=不封
-    cluster_ceil: [1.0, 1.0, 1.0]
+    background_ceiling: 0.28
+    # 按簇序号（小核/中核/超大核）独立封顶；超大核 0.85 只在大负载才动
+    cluster_ceil: [1.0, 1.0, 0.85]
 
-# 性能模式：低门槛快升缓降，保留 0.10 底频
+# 性能模式：撤掉静态底频，低门槛快升，重载才用超大核满频
 performance:
   cpu_load_governor:
-    up_threshold: 0.75
-    down_threshold: 0.45
+    up_threshold: 0.72
+    down_threshold: 0.42
     smoothing_up: 0.85
-    smoothing_down: 0.20
+    smoothing_down: 0.22
     down_rate_limit_ticks: 4
     up_rate_limit_ticks: 1
     headroom_factor: 1.10
-    perf_floor: 0.10
+    perf_floor: 0.0
     perf_ceil: 1.0
-    perf_init: 0.55
+    perf_init: 0.45
     up_jump_threshold: 0.35
-    slow_up_scale: 0.15
+    slow_up_scale: 0.20
     slow_down_scale: 0.40
-    down_fast_threshold: 0.20
+    down_fast_threshold: 0.18
     down_fast_mult: 3.0
-    spike_jump_threshold: 0.35
-    low_load_gain: 0.75
-    interact_fg_util: 0.25
+    spike_jump_threshold: 0.32
+    low_load_gain: 0.62
+    interact_fg_util: 0.18
     # 前台空闲压频放宽（性能模式更看重即时响应），仅前台树整体空闲拍生效
-    background_ceiling: 0.45
+    background_ceiling: 0.38
     # 按簇序号（policy 升序）独立封顶；性能模式不封顶，1.0=不封
     cluster_ceil: [1.0, 1.0, 1.0]
 

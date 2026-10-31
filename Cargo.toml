@@ -3,7 +3,8 @@ members = ["xtask", "yumi-ebpf"]
 
 [package]
 name = "aegis"
-version = "2.0.2"
+# Cargo 要求合法 semver；对外版本号唯一真值是 module/module.prop 的 version=4.6
+version = "4.6.0"
 edition = "2024"
 authors = ["yuki <loyeturz@163.com>"]
 license = "GPL-3.0-or-later"

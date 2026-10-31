@@ -29,11 +29,23 @@ use aya::{
 use log::{debug, info};
 use std::{
     collections::HashMap,
-    sync::mpsc::Sender,
+    sync::{mpsc::Sender, Arc, Mutex},
     time::{Duration, Instant},
 };
 
-pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<()> {
+/// 亮屏采样周期：调度要跟手，保持 100ms（与 CLG 的 tick 语义一致）。
+pub const SAMPLE_MS_SCREEN_ON: u64 = 100;
+/// 息屏采样周期：后台负载变化缓慢，500ms 足够把频率压到最低档，
+/// 同时把 eBPF map 读取 + top-app 扫描 + 消息投递的次数降到 1/5，
+/// 守护自身在息屏时的 CPU 唤醒开销同步下降（官方调度的"无感"关键）。
+pub const SAMPLE_MS_SCREEN_OFF: u64 = 500;
+
+/// 采样周期只由屏幕状态决定，纯函数便于单测。
+pub fn cpu_sample_interval(screen_on: bool) -> Duration {
+    Duration::from_millis(if screen_on { SAMPLE_MS_SCREEN_ON } else { SAMPLE_MS_SCREEN_OFF })
+}
+
+pub async fn start_cpu_loop(tx: Sender<DaemonEvent>, screen_state: Arc<Mutex<bool>>) -> Result<()> {
     // The CPU ELF contains no FPS maps. Owned maps and the program are dropped
     // together on failure, without leaked Ebpf objects or detached sampler tasks.
     let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
@@ -74,12 +86,13 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<()> {
     let mut last_threads: HashMap<u32, u64> = HashMap::new();
     let mut last_pid = 0;
     let mut last_time = get_ktime_ns();
-    let mut tick = tokio::time::interval(Duration::from_millis(100));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut count = 0u32;
     info!("[CPU Monitor] CPU eBPF monitor initialized");
     loop {
-        tick.tick().await;
+        // 自适应采样：亮屏 100ms / 息屏 500ms。采样间隔由屏幕状态决定，
+        // 与调度线程的超时保持同一节拍（亮屏 100ms、息屏 500ms）。
+        let screen_on = *screen_state.lock().unwrap_or_else(|e| e.into_inner());
+        tokio::time::sleep(cpu_sample_interval(screen_on)).await;
         let sampled_at = Instant::now();
         let cpus = aya::util::online_cpus()
             .map_err(|(_, e)| e)
@@ -241,4 +254,15 @@ fn read_topapp_tids() -> Option<Vec<u32>> {
             .filter_map(|s| s.parse::<u32>().ok())
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_interval_follows_screen_state() {
+        assert_eq!(cpu_sample_interval(true), Duration::from_millis(100));
+        assert_eq!(cpu_sample_interval(false), Duration::from_millis(500));
+    }
 }

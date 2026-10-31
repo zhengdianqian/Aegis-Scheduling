@@ -374,14 +374,25 @@ impl CpuLoadGovernor {
             if target_perf > old_perf {
                 cluster.down_wait = 0;
 
+                // 前台在忙的判定：最忙前台线程超闸门（UI/RenderThread 真实交互）。
+                let fg_busy = fg_max_util >= self.cfg.interact_fg_util;
+                // 前台起步（fg onset）：簇仍停在最低档、前台刚开始忙的那一拍。
+                // 轻 App 从静态起步时簇 util 的跳升常常不到 spike_jump_threshold
+                // （如 0.05 → 0.35），旧逻辑要等 2 拍确认才升频，体感就是
+                // "第一次滑动/点按慢半拍"。这里给一条与 touch_jump 同等安全的
+                // 免确认通道：因为只有当前台真忙、且频率还贴在 floor 上时成立，
+                // 目标仍由增益曲线算（低载只会到正确的低档），不会过给；
+                // 后台任务（前台不忙）与息屏（top-app 为空）都不触发。
+                let idle_onset = fg_busy && cluster.current_perf <= self.cfg.perf_floor + 1e-3;
+
                 // 唯一的加速通道：前台 App 在忙（UI/RenderThread 超闸门）且
-                // 本拍负载真实突增 → 跳过连续拍确认，当拍一步到目标。
+                // （本拍负载真实突增 或 刚从前台起步）→ 跳过连续拍确认，当拍一步到目标。
                 // 目标已被增益曲线压过，轻 App 的突增只会快速到达"正确的低档"
                 // （MT fling raw 0.6 也只到 ~1.26GHz），不会过给。
                 // 后台单拍满载毛刺（同步/厂商服务）前台不忙，必须连续
                 // up_rate_limit_ticks 拍确认，单拍毛刺顶不起频率。
-                let touch_jump = jump >= self.cfg.spike_jump_threshold
-                    && fg_max_util >= self.cfg.interact_fg_util;
+                let touch_jump = fg_busy
+                    && (jump >= self.cfg.spike_jump_threshold || idle_onset);
 
                 if touch_jump {
                     cluster.up_wait = 0;

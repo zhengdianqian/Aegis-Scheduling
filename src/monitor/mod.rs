@@ -69,6 +69,7 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
     let screen_state_arc = Arc::new(Mutex::new(true));
     let screen_state_clone_for_watcher = Arc::clone(&screen_state_arc);
     let screen_state_clone_for_app_detect = Arc::clone(&screen_state_arc);
+    let screen_state_clone_for_cpu = Arc::clone(&screen_state_arc);
 
     // 初始化共享的强制刷新标志
     let force_refresh_arc = Arc::new(AtomicBool::new(false));
@@ -115,7 +116,7 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
         .spawn(move || {
             if let Ok(rt) = tokio::runtime::Runtime::new() {
                 rt.block_on(async {
-                    if let Err(e) = cpu_monitor::start_cpu_loop(tx_cpu.clone()).await {
+                    if let Err(e) = cpu_monitor::start_cpu_loop(tx_cpu.clone(), screen_state_clone_for_cpu).await {
                         error!("{}", t_with_args("monitor-cpu-crashed", &fluent_args!("error" => format!("{e:#}"))));
                     }
                 });
