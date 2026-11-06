@@ -152,6 +152,7 @@ target_perf = 簇真实 max_util × gain        （再夹在 perf_floor / perf_c
 - 保留字段：`up/down_threshold`、`low_load_gain`、`headroom_factor`（增益曲线两端）、`spike_jump_threshold` + `interact_fg_util`（jump 通道双条件）、`smoothing_up/down`、`up/down_rate_limit_ticks`、`slow_up/down_scale`、`down_fast_threshold/mult`、`perf_floor/ceil/init`、`up_jump_threshold`。
 - 尖峰衰减（`spike_decay`）随交互态一并删除：后台单拍毛刺改由"前台闸门 + up_wait 连续拍确认"双重过滤，前台不忙的单拍 jump 顶不起频率；真实手势的 jump 本来就不该衰减。
 - `on_load_update(&core_utils, fg_max_util)` 签名不变（fg 利用率仍为两通道使用）。
+- `input_boost_ms` **不属于**这条采样/增益循环：它由独立输入通道驱动（evdev 触摸 → `UserTouch` → `on_input_boost()`），与每拍计算完全解耦，详见 §3.10。
 - tick 调试日志计数 50（约 5s 一条）。
 
 **4.6 增补（`fg onset` 免确认通道）**：
@@ -251,11 +252,39 @@ let touch_jump = fg_busy && (jump >= self.cfg.spike_jump_threshold || idle_onset
 
 **为什么这样更"无感"**：省电/标准档的低载增益、息屏红线、自适应节拍三件事同时作用于"没有交互的时间"，这部分才是待机功耗的大头；交互时间则由增益曲线与两条免确认通道保证跟手与帧率。相比 4.3，静态与息屏的功耗路径更短（更少唤醒、更低上限），亮屏滑动路径更快（第一拍到目标），因此"既不卡也不费电"的区间被拓宽，而不是简单地在省电与卡顿之间二选一。
 
+### 3.10 输入抬频（input boost，4.6.1 新增）
+
+**要补的空窗**：CLG 是「100ms 采样 + 跟随已观测负载」变频，手指按下到首帧之间还没采到新负载，频率仍停在地板上，点按→首帧天然多出约 120ms。官方 walt governor 的 input boost 就是补这个信号，这里用 evdev 原始事件复刻，**只补点按瞬间，不改静止/滚动驻留**。
+
+**链路**（`src/monitor/touch_monitor.rs` → `src/scheduler/mod.rs` → `on_input_boost()`）：
+
+- `touch_monitor.rs` 启动时只读打开 `/dev/input/event*`（不 `EVIOCGRAB`，不干扰系统输入分发），`poll` 读原始 `input_event`，只认 `BTN_TOUCH`（value=1）与 `ABS_MT_TRACKING_ID >= 0` 两种"落下"信号，键盘/侧键/传感器一律忽略；300ms 去抖后发 `DaemonEvent::UserTouch`。
+- `scheduler/mod.rs` 收到事件后，仅当**亮屏 + 当前模式非 fas + CLG 已接管 + 事件延迟 <200ms** 时调用 `CpuLoadGovernor::on_input_boost()`。
+- `on_input_boost()` 把各簇下限抬到 **0.85 档**（再按 `cluster_ceil` 夹紧；8Gen2 实测 p0=1785600 / p3=2457600 / p7=2342400），min/max 同步写成同一频率钉住，并保持 `input_boost_ms`（默认 150ms，**0 = 关闭**）；窗口结束后交回正常降频路径自然回落，不引入任何驻留状态。
+- 抬频窗口内的每一拍**绕过 `background_ceiling`**：点按瞬间前台线程还没跑起来、簇 util 必然很低，若仍按"前台空闲"封顶，会把刚抬起的频率当拍打回。
+
+**三个限制（都踩过，改配置/写自动化时要记住）**：
+
+1. **改配置要就地重写 + 息屏再亮屏**：`config/config.yaml` 的监视只认 `IN_CLOSE_WRITE`，`sed -i`（临时文件 + rename）不触发；且 `input_boost_ms` 属于 CLG 配置，只在 `reload_config()` 被调用时才生效（屏幕状态变化 / 模式切换 / `rules.yaml` 重载 / 守护启动）。正确做法：`cat > config.yaml` 就地写，再息屏→亮屏一次。
+2. **`input tap` 不触发抬频**：它走 Android InputManager 注入，不产生 evdev 原始事件；只有真实手指触摸才会发 `UserTouch`，自动化脚本测不到这条通道。
+3. **触摸设备只在启动时枚举一次**：`start_touch_loop` 启动时扫一遍 `/dev/input/event*` 后不再重扫，热插拔/新增输入设备要重启守护才会被监听。
+
+**实测收益**（MIX Fold 3，亮屏标准档，对照 4.6 无抬频）：
+
+| 场景 | 指标 | 4.6 | 4.6.1 |
+|---|---|---|---|
+| Recents 点按 | 到首帧 p50 | 239ms | **123ms** |
+| Recents 点按 | 顿挫次数 | 9/10 | **0/10** |
+| 下拉通知栏 | 起手最坏帧 | 75ms | **31ms** |
+| 看小说翻页 | 折算耗电 | — | **<0.03%/小时** |
+
+连续滑动不会叠加抬频：`on_input_boost()` 只刷新窗口、不叠档位，滚动期间频率本来由真实负载维持，实测滑动功耗与不开抬频同量级。
+
 ---
 
 ## 4. 8Gen2 定制参数一览
 
-### 4.1 CLG 四模式（`module/config/config.yaml`，v7 内核 + 4.6 定值）
+### 4.1 CLG 四模式（`module/config/config.yaml`，v7 内核 + 4.6 / 4.6.1 定值）
 
 | 参数 | powersave | balance | performance | fast |
 |---|---|---|---|---|
@@ -269,7 +298,8 @@ let touch_jump = fg_busy && (jump >= self.cfg.spike_jump_threshold || idle_onset
 | **spike_jump_threshold** | **0.42** | **0.42** | **0.32** | 0.35 |
 | **interact_fg_util（双通道闸门）** | **0.18** | **0.18** | **0.18** | 0.25 |
 | up_jump / slow_up / slow_down | 0.35 / **0.15** / **0.55** | 0.35 / **0.18** / **0.55** | 0.35 / **0.20** / **0.40** | — |
-| down_fast_thresh / mult | **0.25** / 4.5 | **0.25** / 4.0 | **0.18** / 3.0 | 0.10 / 2.5 |
+| down_fast_thresh / mult | **0.25** / 4.5 | **0.08** / 4.0 | **0.18** / 3.0 | 0.10 / 2.5 |
+| **input_boost_ms（点按抬频，0=关闭）** | 150（未显式，继承默认） | **150**（YAML 显式） | 150（继承默认） | 150（继承默认；锁满频，无实际意义） |
 | **background_ceiling（前台空闲封顶）** | **0.22** | **0.28** | **0.38** | —（不参与） |
 | **cluster_ceil（按簇封顶，policy 升序）** | **[0.70, 0.70, 0.60]** | **[1.0, 1.0, 0.85]** | **[1.0, 1.0, 1.0]** | —（不参与） |
 
