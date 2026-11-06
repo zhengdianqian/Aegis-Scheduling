@@ -313,6 +313,14 @@ v3 时期的理论换算仍可作为手感参考（中核 499~2803MHz）：`util
 
 > 两个 YAML 只保留每个大块上方一行作用注释（无行内解释、无历史调参记录，避免换设备时编码乱码与陈旧误导），完整参数含义以本文档与 `docs/Aegis调参说明.txt` 为准。
 
+> **安装会重置配置**：刷入时 `customize.sh` 会调用 `tools/aegis_adapt.sh` 按本机硬件重新生成 `config/config.yaml`（`rules.yaml` 只替换 `fas_rules` 段、充电/温控配置不动），你在模块目录里手改过的阈值会被这份新生成的默认值覆盖。所以**装完必须核对**：标准档是否为 `down_fast_threshold: 0.08` / `down_fast_mult: 4.0`、`input_boost_ms` 是否存在（4.6.1 的 `-fixed` 包已修正生成模板，装完即为此值；旧的 `aegis-4.6.1-44-20261106-0831.zip` 仍会写成 0.25 且无该字段）：
+>
+> ```bash
+> adb shell 'su -c "grep -n -E \"down_fast_threshold|down_fast_mult|input_boost_ms\" /data/adb/modules/aegis_power_matrix/config/config.yaml"'
+> ```
+>
+> 若被旧模板写成 0.25，用备份还原后再**就地重写 + 息屏再亮屏**使其生效（见 §3.10）。
+
 ### 4.2 FAS 游戏档（`module/rules.yaml`，要点）
 
 - 三簇算力权重（`auto_capacity_weight: false` 显式固化，换 ROM 不漂）：**1.00 / 2.43 / 2.69**，由 capacity 266/811/1024 按 `1+√(cap/266−1)` 换算；

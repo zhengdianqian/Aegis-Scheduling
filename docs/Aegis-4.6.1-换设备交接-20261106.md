@@ -62,9 +62,18 @@ adb -s <SN> shell getprop sys.boot_completed   # 输出 1
 adb -s <SN> shell 'su -c id'                  # 永久 root 设备应立即返回 uid=0
 ```
 
-> **装完必须核对配置（本机踩过的坑）**：`customize.sh` 里的 `aegis_adapt.sh` 会按硬件重新生成 `config/config.yaml`，
-> 本机实测生成的是**旧默认值**——标准档 `0.25`、且**没有 `input_boost_ms`**。
-> 所以安装后要把备份里的配置原样还原回去：
+> **安装会重置配置（必看）**：`customize.sh` 里的 `aegis_adapt.sh` 会按本机硬件**重新生成** `config/config.yaml`
+> （`rules.yaml` 只替换 `fas_rules` 段，充电/温控配置不动），模块目录里手改过的阈值会被这份默认值覆盖。
+> 请用 Release 的 **`aegis-4.6.1-44-20261106-0831-fixed.zip`**（生成模板已修正：标准档 `0.08` / `4.0` + `input_boost_ms: 150`，
+> 包内二进制 `1,570,840` / md5 `13cc5a92…`）；旧的 `aegis-4.6.1-44-20261106-0831.zip` 仍会写成 0.25 且没有该字段。
+> **装完必须核对 `input_boost_ms` 是否存在、标准档是否为 0.08：**
+
+```bash
+adb -s <SN> shell 'su -c "grep -n -E \"down_fast_threshold|down_fast_mult|input_boost_ms\" /data/adb/modules/aegis_power_matrix/config/config.yaml"'
+# 期望：powersave 0.25/4.5；balance 0.08/4.0 + input_boost_ms: 150；performance 0.18/3.0；fast 0.10/2.5
+```
+
+若标准档被写成 0.25，说明装的是旧包或旧模板，按下面还原备份配置：
 
 ```bash
 # 模块文件在部分内核下只对特定 SELinux 域可读；本机 `su -c cp` 被拒，`nsenter -t 1 -m --` 可行
@@ -163,7 +172,7 @@ adb -s <SN> shell 'su -c "ksud soft-reboot"'
 ## 8. 常见问题
 
 - **KSU 管理器里版本/描述不更新**：`update_prop` 只在启动或模式切换时刷新，重启或切一次模式即可。
-- **配置被 zip 覆盖**：见 §2 的坑；装完务必核对 `down_fast_threshold` 与 `input_boost_ms`。
+- **配置被 zip 覆盖**：安装会按硬件重写 `config/config.yaml`（见 §2）；装完务必核对标准档 `down_fast_threshold: 0.08` 与 `input_boost_ms: 150`，缺一即为旧包/旧模板。
 - **ADB 授权失效**：重新插拔数据线、`adb kill-server` 后重试；仍不行到 KSU 管理器撤销并重新授权 USB 调试。
 - **抬频测不到**：先确认用的是 `tapv.sh`（evdev 注入）而不是 `input tap`；再确认 `getevent -pl` 里的当前触摸节点与脚本一致。
 - **模块文件读不出（Permission denied）**：本机直接 `su -c cat/cp` 会被拒，统一改用 `su -c "nsenter -t 1 -m -- ..."`。
@@ -176,6 +185,7 @@ adb -s <SN> shell 'su -c "ksud soft-reboot"'
 4. 替换过程临时执行过 `setenforce 0`，随后无法在运行态恢复 Enforcing，因此做了一次**完整重启**；重启后 SELinux 恢复 Enforcing、root 正常、模块生效。
 5. 完整重启后发现 `aegis_adapt.sh` 把配置重写成旧默认（标准档 0.25、无 `input_boost_ms`），已从备份还原并息屏/亮屏重载。
 6. 最终逐项验证结果见 §1；3 次抬频 3/3 触发，Recents p50 123.9ms。
+7. 事后修根因（**未动手机、未重启**）：`tools/aegis_adapt.sh` 的 balance 段改为生成 `down_fast_threshold: 0.08` / `down_fast_mult: 4.0` + `input_boost_ms: 150`；离线用假 sysfs（3 簇）跑 `install` 模式验证，生成结果与包内默认逐项一致。据此重建 `aegis-4.6.1-44-20261106-0831-fixed.zip`（仅替换 `tools/aegis_adapt.sh`，二进制仍为 `1,570,840` / `13cc5a92…`，md5 `852fef94b05fbfd82a1b8577059c5127`），已上传 Release；旧包保留未动。
 
 ## 附录 A：设备端 final.sh（读取配置/模式/充电/规则/二进制）
 
