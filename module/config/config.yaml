@@ -63,7 +63,10 @@ balance:
     up_jump_threshold: 0.35
     slow_up_scale: 0.18
     slow_down_scale: 0.55
-    down_fast_threshold: 0.25
+    # 快速沉底门槛下调：只在前台几乎完全空闲（util<0.08）才允许 4x 快降，
+    # 避免交互中途 util 短暂回落到 0.08~0.25 就被打回最低频，造成频率锯齿
+    # 与切换/通知栏掉帧
+    down_fast_threshold: 0.08
     down_fast_mult: 4.0
     spike_jump_threshold: 0.42
     low_load_gain: 0.50
