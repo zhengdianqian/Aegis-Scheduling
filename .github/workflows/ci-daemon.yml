@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     if: "!contains(github.event.head_commit.message, '[ci-build]')"
@@ -26,14 +29,29 @@ jobs:
           targets: aarch64-linux-android
           components: rust-src
 
-      - name: Install bpf-linker
-        run: cargo install bpf-linker --locked
+      - name: Install prebuilt bpf-linker
+        shell: bash
+        env:
+          BPF_LINKER_VERSION: "0.11.1"
+          BPF_LINKER_SHA256: e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
+          install_dir="$RUNNER_TEMP/bpf-linker-bin"
+          curl --fail --location --retry 3 \
+            "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst" \
+            --output "$archive"
+          echo "$BPF_LINKER_SHA256  $archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar --zstd -xf "$archive" -C "$install_dir"
+          "$install_dir/bpf-linker" --version
+          echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Setup NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27
+          ndk-version: r29
 
       - name: Build Aegis (arm64-v8a)
         env:
