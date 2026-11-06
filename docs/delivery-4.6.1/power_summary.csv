@@ -1,0 +1,5 @@
+﻿"config","scenario","samples","p0_mean_mhz","p3_mean_mhz","p7_mean_mhz","p3_top_share"
+"base","idle_freq","147","772","933","711","940.8MHz:31%"
+"base","scroll_freq","115","779","931","741","940.8MHz:41%"
+"boost","idle_freq","144","722","808","653","844.8MHz:49%"
+"boost","scroll_freq","126","824","1046","828","940.8MHz:37%"

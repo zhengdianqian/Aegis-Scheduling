@@ -1,0 +1,428 @@
+﻿diff --git a/.github/workflows/ci-daemon.yml b/.github/workflows/ci-daemon.yml
+new file mode 100644
+index 0000000..cb5a370
+--- /dev/null
++++ b/.github/workflows/ci-daemon.yml
+@@ -0,0 +1,80 @@
++name: CI daemon (aarch64)
++
++# 仅用于 feat/input-boost 分支：编译守护进程并把 aarch64 二进制回提交到本分支，
++# 便于无本地 Rust 工具链的环境直接取产物部署（不打包整模块）。
++on:
++  push:
++    branches: [ "feat/input-boost" ]
++  workflow_dispatch:
++
++permissions:
++  contents: write
++
++env:
++  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
++
++jobs:
++  build:
++    if: "!contains(github.event.head_commit.message, '[ci-build]')"
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++          ref: ${{ github.ref_name }}
++
++      - name: Install Rust nightly (aarch64-linux-android + rust-src)
++        uses: dtolnay/rust-toolchain@nightly
++        with:
++          targets: aarch64-linux-android
++          components: rust-src
++
++      - name: Install prebuilt bpf-linker
++        shell: bash
++        env:
++          BPF_LINKER_VERSION: "0.11.1"
++          BPF_LINKER_SHA256: e058a6aecc9e65fa4c977b298a8e4b738424d7629769fd352eed409fb57e16e8
++        run: |
++          set -euo pipefail
++          archive="$RUNNER_TEMP/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
++          install_dir="$RUNNER_TEMP/bpf-linker-bin"
++          curl --fail --location --retry 3 \
++            "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst" \
++            --output "$archive"
++          echo "$BPF_LINKER_SHA256  $archive" | sha256sum --check --strict
++          mkdir -p "$install_dir"
++          tar --zstd -xf "$archive" -C "$install_dir"
++          "$install_dir/bpf-linker" --version
++          echo "$install_dir" >> "$GITHUB_PATH"
++
++      - name: Setup NDK
++        id: setup-ndk
++        uses: nttld/setup-ndk@v1
++        with:
++          ndk-version: r29
++
++      - name: Build Aegis (arm64-v8a)
++        env:
++          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
++        run: |
++          cargo install cargo-ndk --locked
++          cargo ndk --platform 26 -t arm64-v8a build -Z build-std -r --locked
++          ls -l target/aarch64-linux-android/release/Aegis
++
++      - name: Stage binary
++        run: |
++          mkdir -p ci-artifacts
++          cp target/aarch64-linux-android/release/Aegis ci-artifacts/Aegis
++          file ci-artifacts/Aegis
++
++      - name: Commit binary back to branch
++        run: |
++          git config user.name  "aegis-ci"
++          git config user.email "aegis-ci@users.noreply.github.com"
++          git add -f ci-artifacts/Aegis
++          if git diff --cached --quiet; then
++            echo "binary unchanged"
++            exit 0
++          fi
++          git commit -m "[ci-build] aarch64 Aegis binary"
++          git push origin HEAD:${{ github.ref_name }}
+diff --git a/module/config/config.yaml b/module/config/config.yaml
+index a245dcc..b10001d 100644
+--- a/module/config/config.yaml
++++ b/module/config/config.yaml
+@@ -75,6 +75,9 @@ balance:
+     background_ceiling: 0.28
+     # 按簇序号（小核/中核/超大核）独立封顶；超大核 0.85 只在大负载才动
+     cluster_ceil: [1.0, 1.0, 0.85]
++    # 点按瞬间抬频：手指按下时把各簇下限抬到 85% 并保持此毫秒数，之后自然回落
++    # （仅补 100ms 采样空窗，静止/滚动驻留不变；0 = 关闭）
++    input_boost_ms: 150
+ 
+ # 性能模式：撤掉静态底频，低门槛快升，重载才用超大核满频
+ performance:
+diff --git a/src/common.rs b/src/common.rs
+index 75e9e07..08997be 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -49,6 +49,10 @@ pub enum DaemonEvent {
+     ConfigReload(RulesConfig),
+ 
+     ScreenStateChange(bool),
++    /// 手指按下（evdev BTN_TOUCH/ABS_MT 追踪 ID 落下）：仅用于点按瞬间抬频
++    UserTouch {
++        sampled_at: std::time::Instant,
++    },
+ }
+ 
+ /// 获取模块根目录的绝对路径
+diff --git a/src/monitor/mod.rs b/src/monitor/mod.rs
+index f5ee6d3..7eecd4e 100644
+--- a/src/monitor/mod.rs
++++ b/src/monitor/mod.rs
+@@ -28,6 +28,7 @@ pub mod screen_detect;
+ pub mod fps_monitor;
+ pub mod cpu_monitor;
+ mod sampling;
++pub mod touch_monitor;
+ 
+ use crate::common::DaemonEvent;
+ use crate::fluent_args;
+@@ -126,7 +127,17 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
+             let _ = tx_cpu.send(DaemonEvent::CpuMonitorUnavailable);
+         })?;
+ 
+-    // 7. 启动应用检测主循环 (阻塞)
++    // 7. 启动触摸监听（evdev 原始事件，仅用于点按瞬间抬频）
++    let tx_touch = tx.clone();
++    thread::Builder::new()
++        .name("touch_monitor_evdev".to_string())
++        .spawn(move || {
++            if let Err(e) = touch_monitor::start_touch_loop(tx_touch) {
++                log::error!("[Touch] loop exited: {e}");
++            }
++        })?;
++
++    // 8. 启动应用检测主循环 (阻塞)
+     app_detect::app_detection_loop(
+         config_arc,
+         screen_state_clone_for_app_detect,
+diff --git a/src/monitor/touch_monitor.rs b/src/monitor/touch_monitor.rs
+new file mode 100644
+index 0000000..a824fe0
+--- /dev/null
++++ b/src/monitor/touch_monitor.rs
+@@ -0,0 +1,108 @@
++/*
++ * Copyright (C) 2026 yuki
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++//! 触摸事件监听（evdev）。
++//!
++//! CLG 是 100ms 采样 + "跟随已观测负载"变频，点按瞬间还没采到负载，
++//! 会把频率留在低频上，导致点按到首帧多出约 120ms。官方调度的 walt
++//! governor 有 input boost（touch-down 当拍抬频），这里用 evdev 原始事件
++//! 补上同一个信号，只做一件事：手指按下 → 发 UserTouch 事件。
++//!
++//! 只读打开（不 EVIOCGRAB，不干扰系统输入分发）；只认 BTN_TOUCH 落下和
++//! ABS_MT_TRACKING_ID >= 0，键盘/侧键/传感器的事件一律忽略。
++
++use std::error::Error;
++use std::fs::File;
++use std::io::Read;
++use std::os::unix::io::AsRawFd;
++use std::sync::mpsc::Sender;
++use std::time::{Duration, Instant};
++
++use log::{info, warn};
++
++use crate::common::DaemonEvent;
++
++const EV_KEY: u16 = 0x01;
++const EV_ABS: u16 = 0x03;
++const BTN_TOUCH: u16 = 0x14a; // 330
++const ABS_MT_TRACKING_ID: u16 = 0x39; // 57
++/// struct input_event: timeval(16) + type(2) + code(2) + value(4) = 24 (64-bit)
++const EVENT_SIZE: usize = 24;
++/// 同一次按下会连发多个 ABS_MT 事件，做最小去抖；不影响连续点按（>300ms 间隔）
++const TOUCH_COOLDOWN: Duration = Duration::from_millis(300);
++
++pub fn start_touch_loop(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
++    let mut devices: Vec<File> = Vec::new();
++    match std::fs::read_dir("/dev/input") {
++        Ok(entries) => {
++            for entry in entries.flatten() {
++                let name = entry.file_name().to_string_lossy().to_string();
++                if !name.starts_with("event") {
++                    continue;
++                }
++                let path = entry.path();
++                match File::open(&path) {
++                    Ok(file) => devices.push(file),
++                    Err(e) => warn!("[Touch] open {} failed: {e}", path.display()),
++                }
++            }
++        }
++        Err(e) => warn!("[Touch] read /dev/input failed: {e}"),
++    }
++    info!("[Touch] watching {} input devices", devices.len());
++    if devices.is_empty() {
++        return Ok(());
++    }
++
++    let mut buf = [0u8; 4096];
++    let mut last: Option<Instant> = None;
++
++    loop {
++        let mut pfds: Vec<libc::pollfd> = devices
++            .iter()
++            .map(|f| libc::pollfd { fd: f.as_raw_fd(), events: libc::POLLIN, revents: 0 })
++            .collect();
++        let rc = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 1000) };
++        if rc <= 0 {
++            continue;
++        }
++        for i in 0..devices.len() {
++            if pfds[i].revents & libc::POLLIN == 0 {
++                continue;
++            }
++            let n = match devices[i].read(&mut buf) {
++                Ok(n) => n,
++                Err(_) => continue,
++            };
++            let mut down = false;
++            for chunk in buf[..n].chunks_exact(EVENT_SIZE) {
++                let ev_type = u16::from_le_bytes([chunk[16], chunk[17]]);
++                let code = u16::from_le_bytes([chunk[18], chunk[19]]);
++                let value = i32::from_le_bytes([chunk[20], chunk[21], chunk[22], chunk[23]]);
++                if (ev_type == EV_KEY && code == BTN_TOUCH && value == 1)
++                    || (ev_type == EV_ABS && code == ABS_MT_TRACKING_ID && value >= 0)
++                {
++                    down = true;
++                }
++            }
++            if down && last.map_or(true, |t| t.elapsed() >= TOUCH_COOLDOWN) {
++                last = Some(Instant::now());
++                let _ = tx.send(DaemonEvent::UserTouch { sampled_at: last.unwrap() });
++            }
++        }
++    }
++}
+diff --git a/src/scheduler/config.rs b/src/scheduler/config.rs
+index 3cb4fce..38f656f 100644
+--- a/src/scheduler/config.rs
++++ b/src/scheduler/config.rs
+@@ -81,6 +81,11 @@ pub struct CpuLoadGovernorConfig {
+     /// perf_ceil。缺省或越位的簇回退 perf_ceil；空表 = 不覆盖。
+     /// 用于单独压低超大核过给（如 [1.0, 1.0, 0.65]），不影响中小核。
+     #[serde(default)] pub cluster_ceil: Vec<f32>,
++    /// 触摸抬频：检测到手指按下时，立即把各簇频率下限抬到 85%（不超过
++    /// cluster_ceil），并保持此毫秒数后按正常降频路径自然回落。用于补齐
++    /// 点按瞬间 CLG 还没采到负载的那 100ms 空窗（官方调度有 input boost）。
++    /// 0 = 关闭；默认 150ms。
++    #[serde(default = "d_clg_input_boost")] pub input_boost_ms: u32,
+ }
+ 
+ fn d_clg_interact_fg() -> f32 { 0.25 }
+@@ -103,6 +108,7 @@ fn d_clg_down_fast_thresh() -> f32 { 0.10 }
+ fn d_clg_down_fast_mult() -> f32 { 2.5 }
+ fn d_clg_spike_jump() -> f32 { 0.35 }
+ fn d_clg_low_gain() -> f32 { 1.0 }
++fn d_clg_input_boost() -> u32 { 150 }
+ 
+ impl Default for CpuLoadGovernorConfig {
+     fn default() -> Self {
+@@ -128,6 +134,7 @@ impl Default for CpuLoadGovernorConfig {
+             interact_fg_util: d_clg_interact_fg(),
+             background_ceiling: d_clg_bg_ceil(),
+             cluster_ceil: Vec::new(),
++            input_boost_ms: d_clg_input_boost(),
+         }
+     }
+ }
+@@ -197,6 +204,8 @@ impl CpuLoadGovernorConfig {
+             *c = c.clamp(0.0, 1.0).max(self.perf_floor);
+         }
+         self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
++        // 触摸抬频时长：0 = 关闭，上限 1000ms（避免误配成长期驻留）
++        if self.input_boost_ms > 1000 { self.input_boost_ms = 1000; }
+     }
+ }
+ 
+diff --git a/src/scheduler/cpu_load_governor.rs b/src/scheduler/cpu_load_governor.rs
+index 61d4a69..65477cf 100644
+--- a/src/scheduler/cpu_load_governor.rs
++++ b/src/scheduler/cpu_load_governor.rs
+@@ -20,10 +20,15 @@ use crate::scheduler::config::CpuLoadGovernorConfig;
+ use crate::utils::FastWriter;
+ use log::{info, debug, warn};
+ use std::fs;
++use std::time::{Duration, Instant};
+ 
+ use crate::i18n::{t, t_with_args};
+ use crate::fluent_args;
+ 
++/// 触摸抬频的目标 perf：按下瞬间把各簇下限抬到这里（再按簇上限夹紧）。
++/// 0.85 ≈ 官方 input boost 实测档位（小核 1.76GHz / 中核 2.46GHz）。
++const INPUT_BOOST_PERF: f32 = 0.85;
++
+ // ════════════════════════════════════════════════════════════════
+ //  PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
+ // ════════════════════════════════════════════════════════════════
+@@ -112,6 +117,8 @@ pub struct CpuLoadGovernor {
+     cfg: CpuLoadGovernorConfig,
+     active: bool,
+     log_counter: u32,
++    /// 触摸抬频窗口截止时刻；None/已过期 = 不抬频
++    boost_until: Option<Instant>,
+ }
+ 
+ impl CpuLoadGovernor {
+@@ -122,6 +129,7 @@ impl CpuLoadGovernor {
+             cfg: CpuLoadGovernorConfig::default(),
+             active: false,
+             log_counter: 0,
++            boost_until: None,
+         }
+     }
+ 
+@@ -262,6 +270,7 @@ impl CpuLoadGovernor {
+         self.clusters.clear();
+         self.active = false;
+         self.log_counter = 0;
++        self.boost_until = None;
+     }
+ 
+     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
+@@ -331,8 +340,31 @@ impl CpuLoadGovernor {
+         all_ok
+     }
+ 
++    /// 触摸抬频：手指按下瞬间调用（t≈0），不等下一个 100ms 采样拍。
++    /// 直接把各簇拉到 INPUT_BOOST_PERF 并保持 input_boost_ms，之后交回正常
++    /// 降频路径自然回落。只在交互瞬间生效，静止/滚动驻留不受影响。
++    pub fn on_input_boost(&mut self) {
++        if !self.active { return; }
++        if self.cfg.input_boost_ms == 0 { return; }
++        let floor = self.cfg.perf_floor;
++        self.boost_until = Some(Instant::now() + Duration::from_millis(self.cfg.input_boost_ms as u64));
++        for (idx, cluster) in self.clusters.iter_mut().enumerate() {
++            let eff_ceil = self.cfg.cluster_ceil.get(idx).copied()
++                .filter(|v| v.is_finite())
++                .unwrap_or(self.cfg.perf_ceil)
++                .clamp(floor, 1.0);
++            let perf = INPUT_BOOST_PERF.clamp(floor, eff_ceil);
++            if perf > cluster.current_perf {
++                cluster.current_perf = perf;
++                let target_freq = cluster.find_nearest_freq(perf);
++                cluster.write_freq(target_freq);
++            }
++        }
++    }
++
+     pub fn on_load_update(&mut self, core_utils: &[f32], fg_max_util: f32) {
+         if !self.active { return; }
++        let boosting = self.boost_until.map_or(false, |until| until > Instant::now());
+ 
+         for (idx, cluster) in self.clusters.iter_mut().enumerate() {
+             let raw_util = cluster.max_util(core_utils);
+@@ -349,7 +381,11 @@ impl CpuLoadGovernor {
+             // 任务，目标额外封顶 background_ceiling；任何前台线程一旦忙碌
+             // （含 WebView/沙箱渲染子进程）本拍即解除。纯函数判定、无驻留。
+             let fg_idle = fg_max_util < self.cfg.interact_fg_util;
+-            let upper = if fg_idle {
++            // 抬频窗口内不受 background_ceiling 压制：点按瞬间前台线程还没跑起来，
++            // 本拍 util 必然很低，若仍按后台封顶会把刚抬起的频率立刻打回。
++            let upper = if boosting {
++                eff_ceil
++            } else if fg_idle {
+                 eff_ceil.min(self.cfg.background_ceiling)
+             } else {
+                 eff_ceil
+@@ -440,6 +476,13 @@ impl CpuLoadGovernor {
+             }
+ 
+             cluster.current_perf = cluster.current_perf.clamp(self.cfg.perf_floor, upper);
++            // 抬频窗口内维持下限，避免本拍 util 仍低时把刚抬起的频率又降回去
++            if boosting {
++                let boost_perf = INPUT_BOOST_PERF.clamp(self.cfg.perf_floor, eff_ceil);
++                if boost_perf > cluster.current_perf {
++                    cluster.current_perf = boost_perf;
++                }
++            }
+             let target_freq = cluster.find_nearest_freq(cluster.current_perf);
+             cluster.write_freq(target_freq);
+         }
+diff --git a/src/scheduler/mod.rs b/src/scheduler/mod.rs
+index c2bc554..cc93182 100644
+--- a/src/scheduler/mod.rs
++++ b/src/scheduler/mod.rs
+@@ -265,6 +265,18 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
+                                 game = if mode == "fas" { Some((pid, package_name, temperature)) } else { None };
+                                 fas_controller.set_temperature(temperature);
+                             }
++                            DaemonEvent::UserTouch { sampled_at } => {
++                                // 手指按下瞬间抬频：只补 CLG 100ms 采样空窗，
++                                // 仅亮屏 + CLG 生效 + 非 FAS 时执行；监听端已做去抖。
++                                if is_screen_on
++                                    && cpu_governor.is_active()
++                                    && cpu_health.ready(now)
++                                    && mode_clone.lock().unwrap().as_str() != "fas"
++                                    && sampled_at.elapsed() < std::time::Duration::from_millis(200)
++                                {
++                                    cpu_governor.on_input_boost();
++                                }
++                            }
+                             DaemonEvent::SystemLoadUpdate { core_utils, foreground_max_util, sampled_at } => {
+                                 let valid = !core_utils.is_empty()
+                                     && core_utils.iter().all(|u| u.is_finite() && (0.0..=1.0).contains(u))

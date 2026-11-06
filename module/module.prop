@@ -1,6 +1,6 @@
 id=aegis_power_matrix
 name=Aegis
-version=4.6
-versionCode=9
+version=4.6.1
+versionCode=10
 author=默默的阿文
 description=eBPF 负载调频 · 帧感知调度 · 充电阈值 · 温控

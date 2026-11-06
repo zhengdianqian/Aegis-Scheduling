@@ -1,0 +1,28 @@
+场景,指标,包名/对象,基线中位(0.25),opt2中位(0.08),变化,说明
+切换应用,modern jank %,com.android.systemui,50,25,-50%,recents 微信/设置来回 3 轮；SystemUI 仅 8-20 帧
+切换应用,50th ms,com.android.systemui,21,12,-43%,
+切换应用,90th ms,com.android.systemui,34,23,-32%,
+切换应用,95th ms,com.android.systemui,34,25,-26%,
+切换应用,GPU 95th ms,com.android.systemui,20,16,-20%,GPU 尾延迟同步下降
+切换应用,modern jank %,com.miui.home(Launcher),0.35,0.34,持平,交叉验证
+切换应用,legacy jank %,com.miui.home(Launcher),8.13,5.72,-30%,噪声区间内
+通知栏下拉回弹,modern jank %,com.android.systemui,1.10,0.68,-38%,
+通知栏下拉回弹,legacy jank %,com.android.systemui,34.65,12.14,-65%,
+通知栏下拉回弹,90th ms,com.android.systemui,15,10,-33%,
+通知栏下拉回弹,95th ms,com.android.systemui,19,14,-26%,
+长列表滑动,modern jank %,com.coolapk.market,0.00,0.02,噪声级,上滑6→下滑6→上滑6；3 轮
+长列表滑动,legacy jank %,com.coolapk.market,25.94,29.67,分布重叠,无实质退化
+长列表滑动,50th ms,com.coolapk.market,13,13,持平,
+长列表滑动,90th ms,com.coolapk.market,16,16,持平,
+长列表滑动,GPU 95th ms,com.coolapk.market,9,9,持平,
+桌面翻页,modern jank %,com.miui.home,0,0,持平,右2→左2→右2；3 轮
+桌面翻页,legacy jank %,com.miui.home,4.89,7.06,分布重叠,基线含 22.13% 离群
+桌面翻页,90th ms,com.miui.home,10,9,略好,
+冷启,TotalTime ms,com.coolapk.market,3592,3280,-8.7%,force-stop 后 COLD
+热启,TotalTime ms,设置/微信,360,293,-18.6%,WARM/HOT 混合
+滚动频率驻留,p0 均值 MHz,cpufreq policy0,1240,1091,-12%,3 轮均值的中位
+滚动频率驻留,p3 均值 MHz,cpufreq policy3,1910,1893,-0.9%,
+滚动频率驻留,p7 均值 MHz,cpufreq policy7,712,681,-4.4%,
+静止频率驻留,p0 均值 MHz,cpufreq policy0,1100,1037,-5.7%,亮屏静止 30s 交替 A/B 3 对
+静止频率驻留,p3 均值 MHz,cpufreq policy3,739,687,-7.0%,
+静止频率驻留,p7 均值 MHz,cpufreq policy7,639,628,-1.7%,
