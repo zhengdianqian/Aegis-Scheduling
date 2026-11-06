@@ -51,7 +51,7 @@ fluent-bundle = "0.16.0"
 intl-memoizer = "0.5.3"
 
 [dev-dependencies]
-aya-obj = "0.3.0"
+aya-obj = "0.6.0"
 
 [profile.release]
 strip = true
