@@ -81,6 +81,11 @@ pub struct CpuLoadGovernorConfig {
     /// perf_ceil。缺省或越位的簇回退 perf_ceil；空表 = 不覆盖。
     /// 用于单独压低超大核过给（如 [1.0, 1.0, 0.65]），不影响中小核。
     #[serde(default)] pub cluster_ceil: Vec<f32>,
+    /// 触摸抬频：检测到手指按下时，立即把各簇频率下限抬到 85%（不超过
+    /// cluster_ceil），并保持此毫秒数后按正常降频路径自然回落。用于补齐
+    /// 点按瞬间 CLG 还没采到负载的那 100ms 空窗（官方调度有 input boost）。
+    /// 0 = 关闭；默认 150ms。
+    #[serde(default = "d_clg_input_boost")] pub input_boost_ms: u32,
 }
 
 fn d_clg_interact_fg() -> f32 { 0.25 }
@@ -103,6 +108,7 @@ fn d_clg_down_fast_thresh() -> f32 { 0.10 }
 fn d_clg_down_fast_mult() -> f32 { 2.5 }
 fn d_clg_spike_jump() -> f32 { 0.35 }
 fn d_clg_low_gain() -> f32 { 1.0 }
+fn d_clg_input_boost() -> u32 { 150 }
 
 impl Default for CpuLoadGovernorConfig {
     fn default() -> Self {
@@ -128,6 +134,7 @@ impl Default for CpuLoadGovernorConfig {
             interact_fg_util: d_clg_interact_fg(),
             background_ceiling: d_clg_bg_ceil(),
             cluster_ceil: Vec::new(),
+            input_boost_ms: d_clg_input_boost(),
         }
     }
 }
@@ -197,6 +204,8 @@ impl CpuLoadGovernorConfig {
             *c = c.clamp(0.0, 1.0).max(self.perf_floor);
         }
         self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
+        // 触摸抬频时长：0 = 关闭，上限 1000ms（避免误配成长期驻留）
+        if self.input_boost_ms > 1000 { self.input_boost_ms = 1000; }
     }
 }
 

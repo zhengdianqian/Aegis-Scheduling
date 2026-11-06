@@ -1,0 +1,62 @@
+name: CI daemon (aarch64)
+
+# 仅用于 feat/input-boost 分支：编译守护进程并把 aarch64 二进制回提交到本分支，
+# 便于无本地 Rust 工具链的环境直接取产物部署（不打包整模块）。
+on:
+  push:
+    branches: [ "feat/input-boost" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: "!contains(github.event.head_commit.message, '[ci-build]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Install Rust nightly (aarch64-linux-android + rust-src)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-linux-android
+          components: rust-src
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --locked
+
+      - name: Setup NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27
+
+      - name: Build Aegis (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo install cargo-ndk --locked
+          cargo ndk --platform 26 -t arm64-v8a build -Z build-std -r --locked
+          ls -l target/aarch64-linux-android/release/Aegis
+
+      - name: Stage binary
+        run: |
+          mkdir -p ci-artifacts
+          cp target/aarch64-linux-android/release/Aegis ci-artifacts/Aegis
+          file ci-artifacts/Aegis
+
+      - name: Commit binary back to branch
+        run: |
+          git config user.name  "aegis-ci"
+          git config user.email "aegis-ci@users.noreply.github.com"
+          git add -f ci-artifacts/Aegis
+          if git diff --cached --quiet; then
+            echo "binary unchanged"
+            exit 0
+          fi
+          git commit -m "[ci-build] aarch64 Aegis binary"
+          git push origin HEAD:${{ github.ref_name }}

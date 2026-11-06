@@ -20,9 +20,14 @@ use crate::scheduler::config::CpuLoadGovernorConfig;
 use crate::utils::FastWriter;
 use log::{info, debug, warn};
 use std::fs;
+use std::time::{Duration, Instant};
 
 use crate::i18n::{t, t_with_args};
 use crate::fluent_args;
+
+/// 触摸抬频的目标 perf：按下瞬间把各簇下限抬到这里（再按簇上限夹紧）。
+/// 0.85 ≈ 官方 input boost 实测档位（小核 1.76GHz / 中核 2.46GHz）。
+const INPUT_BOOST_PERF: f32 = 0.85;
 
 // ════════════════════════════════════════════════════════════════
 //  PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
@@ -112,6 +117,8 @@ pub struct CpuLoadGovernor {
     cfg: CpuLoadGovernorConfig,
     active: bool,
     log_counter: u32,
+    /// 触摸抬频窗口截止时刻；None/已过期 = 不抬频
+    boost_until: Option<Instant>,
 }
 
 impl CpuLoadGovernor {
@@ -122,6 +129,7 @@ impl CpuLoadGovernor {
             cfg: CpuLoadGovernorConfig::default(),
             active: false,
             log_counter: 0,
+            boost_until: None,
         }
     }
 
@@ -262,6 +270,7 @@ impl CpuLoadGovernor {
         self.clusters.clear();
         self.active = false;
         self.log_counter = 0;
+        self.boost_until = None;
     }
 
     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
@@ -331,8 +340,31 @@ impl CpuLoadGovernor {
         all_ok
     }
 
+    /// 触摸抬频：手指按下瞬间调用（t≈0），不等下一个 100ms 采样拍。
+    /// 直接把各簇拉到 INPUT_BOOST_PERF 并保持 input_boost_ms，之后交回正常
+    /// 降频路径自然回落。只在交互瞬间生效，静止/滚动驻留不受影响。
+    pub fn on_input_boost(&mut self) {
+        if !self.active { return; }
+        if self.cfg.input_boost_ms == 0 { return; }
+        let floor = self.cfg.perf_floor;
+        self.boost_until = Some(Instant::now() + Duration::from_millis(self.cfg.input_boost_ms as u64));
+        for (idx, cluster) in self.clusters.iter_mut().enumerate() {
+            let eff_ceil = self.cfg.cluster_ceil.get(idx).copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(self.cfg.perf_ceil)
+                .clamp(floor, 1.0);
+            let perf = INPUT_BOOST_PERF.clamp(floor, eff_ceil);
+            if perf > cluster.current_perf {
+                cluster.current_perf = perf;
+                let target_freq = cluster.find_nearest_freq(perf);
+                cluster.write_freq(target_freq);
+            }
+        }
+    }
+
     pub fn on_load_update(&mut self, core_utils: &[f32], fg_max_util: f32) {
         if !self.active { return; }
+        let boosting = self.boost_until.map_or(false, |until| until > Instant::now());
 
         for (idx, cluster) in self.clusters.iter_mut().enumerate() {
             let raw_util = cluster.max_util(core_utils);
@@ -349,7 +381,11 @@ impl CpuLoadGovernor {
             // 任务，目标额外封顶 background_ceiling；任何前台线程一旦忙碌
             // （含 WebView/沙箱渲染子进程）本拍即解除。纯函数判定、无驻留。
             let fg_idle = fg_max_util < self.cfg.interact_fg_util;
-            let upper = if fg_idle {
+            // 抬频窗口内不受 background_ceiling 压制：点按瞬间前台线程还没跑起来，
+            // 本拍 util 必然很低，若仍按后台封顶会把刚抬起的频率立刻打回。
+            let upper = if boosting {
+                eff_ceil
+            } else if fg_idle {
                 eff_ceil.min(self.cfg.background_ceiling)
             } else {
                 eff_ceil
@@ -440,6 +476,13 @@ impl CpuLoadGovernor {
             }
 
             cluster.current_perf = cluster.current_perf.clamp(self.cfg.perf_floor, upper);
+            // 抬频窗口内维持下限，避免本拍 util 仍低时把刚抬起的频率又降回去
+            if boosting {
+                let boost_perf = INPUT_BOOST_PERF.clamp(self.cfg.perf_floor, eff_ceil);
+                if boost_perf > cluster.current_perf {
+                    cluster.current_perf = boost_perf;
+                }
+            }
             let target_freq = cluster.find_nearest_freq(cluster.current_perf);
             cluster.write_freq(target_freq);
         }

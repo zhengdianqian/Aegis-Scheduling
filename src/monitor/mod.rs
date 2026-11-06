@@ -28,6 +28,7 @@ pub mod screen_detect;
 pub mod fps_monitor;
 pub mod cpu_monitor;
 mod sampling;
+pub mod touch_monitor;
 
 use crate::common::DaemonEvent;
 use crate::fluent_args;
@@ -126,7 +127,17 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
             let _ = tx_cpu.send(DaemonEvent::CpuMonitorUnavailable);
         })?;
 
-    // 7. 启动应用检测主循环 (阻塞)
+    // 7. 启动触摸监听（evdev 原始事件，仅用于点按瞬间抬频）
+    let tx_touch = tx.clone();
+    thread::Builder::new()
+        .name("touch_monitor_evdev".to_string())
+        .spawn(move || {
+            if let Err(e) = touch_monitor::start_touch_loop(tx_touch) {
+                log::error!("[Touch] loop exited: {e}");
+            }
+        })?;
+
+    // 8. 启动应用检测主循环 (阻塞)
     app_detect::app_detection_loop(
         config_arc,
         screen_state_clone_for_app_detect,

@@ -49,6 +49,10 @@ pub enum DaemonEvent {
     ConfigReload(RulesConfig),
 
     ScreenStateChange(bool),
+    /// 手指按下（evdev BTN_TOUCH/ABS_MT 追踪 ID 落下）：仅用于点按瞬间抬频
+    UserTouch {
+        sampled_at: std::time::Instant,
+    },
 }
 
 /// 获取模块根目录的绝对路径

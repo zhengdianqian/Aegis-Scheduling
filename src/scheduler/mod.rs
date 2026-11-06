@@ -265,6 +265,18 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                 game = if mode == "fas" { Some((pid, package_name, temperature)) } else { None };
                                 fas_controller.set_temperature(temperature);
                             }
+                            DaemonEvent::UserTouch { sampled_at } => {
+                                // 手指按下瞬间抬频：只补 CLG 100ms 采样空窗，
+                                // 仅亮屏 + CLG 生效 + 非 FAS 时执行；监听端已做去抖。
+                                if is_screen_on
+                                    && cpu_governor.is_active()
+                                    && cpu_health.ready(now)
+                                    && mode_clone.lock().unwrap().as_str() != "fas"
+                                    && sampled_at.elapsed() < std::time::Duration::from_millis(200)
+                                {
+                                    cpu_governor.on_input_boost();
+                                }
+                            }
                             DaemonEvent::SystemLoadUpdate { core_utils, foreground_max_util, sampled_at } => {
                                 let valid = !core_utils.is_empty()
                                     && core_utils.iter().all(|u| u.is_finite() && (0.0..=1.0).contains(u))
